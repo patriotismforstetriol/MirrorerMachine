@@ -1,0 +1,26 @@
+{
+  "name": "mirrorermachine",
+  "version": "1.0.0",
+  "description": "Sync conversations between a Discord server and a Simple Machines Forum",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/patriotismforstetriol/MirrorerMachine.git"
+  },
+  "author": "patriotismforstetriol",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/patriotismforstetriol/MirrorerMachine/issues"
+  },
+  "homepage": "https://github.com/patriotismforstetriol/MirrorerMachine#readme",
+  "dependencies": {
+    "discord.js": "^14.7.1",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "eslint": "^8.31.0"
+  }
+}
