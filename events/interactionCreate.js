@@ -1,4 +1,4 @@
-const { Events, MembershipScreeningFieldType } = require('discord.js');
+const { Events } = require('discord.js');
 const { pool } = require('../dbtest');
 const { myDiscordAdmin, guildRegisteredRole } = require('../config.json');
 
@@ -21,6 +21,7 @@ module.exports = {
 				console.error(error);
 			}
 		}
+
 		if (interaction.isModalSubmit()) {
 			if (interaction.customId === 'namemodal') {
 				await interaction.deferReply({ ephemeral: true });
@@ -59,7 +60,6 @@ module.exports = {
 					console.log('Failed to connect to db due to ', err);
 					await interaction.editReply('Failed to connect to my database!');
 				}
-
 			}
 		}
 	},

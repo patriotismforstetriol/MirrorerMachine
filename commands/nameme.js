@@ -3,7 +3,7 @@ const { SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, Act
 module.exports = {
 	data: new SlashCommandBuilder()
 		.setName('nameme')
-		.setDescription('Set the name that MirrorerMachine will list as the author of your messages when they are mirrored onto the web forum site.'),
+		.setDescription('Set the name that MirrorerMachine will list as the author of your messages on the web forum.'),
 	async execute(interaction) {
 		// interaction.user is the object representing the User who ran the command
 		// interaction.member is the GuildMember object, which represents the user in the specific guild
