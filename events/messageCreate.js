@@ -1,9 +1,14 @@
 const { Events } = require('discord.js');
+const { threadChannels } = require('../config.json');
 
 module.exports = {
 	name: Events.MessageCreate,
 	async execute(message) {
+		// No bot messages and discard irrelevant channels
 		if (message.author.bot) return;
+		if ((threadChannels.filter(channel => channel === message.channelId)).length === 0) {
+			return;
+		}
 
 		if (message.content.length <= 81) {
 			// if message length <= 81: start a thread with that message as both title and content
