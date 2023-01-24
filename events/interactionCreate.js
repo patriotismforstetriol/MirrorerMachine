@@ -1,5 +1,5 @@
 const { Events } = require('discord.js');
-const { pool } = require('../dbtest');
+const { pool } = require('../SMFlib');
 const { myDiscordAdmin, guildRegisteredRole } = require('../config.json');
 
 module.exports = {
