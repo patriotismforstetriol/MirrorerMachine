@@ -161,12 +161,20 @@ class SMFConnection {
 		await this.put_newMsg_setId(msgId, topicId, boardId, usersName, msgTitle, msgContent);
 
 		// Update the latest message id in the topic row
-		await this.update_forumTopic_LatestMsg(topicId, msgId);
+		await this.update_forumTopic_wLatestMsg(topicId, msgId);
 
 		await this.commit();
 
 		// Track msg in our discord link database
 		await this.put_msgIdPair(msgId, discordMessageObject.id);
+	}
+
+	async sync_updateMsg(discordMessageObject) {
+		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
+		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		const newBody = getForumReadyContent(discordMessageObject.content, usersName);
+
+		await this.update_forumMsg(msgId, usersName, newBody);
 	}
 
 	/* Functions on: discordmirror_members */
@@ -316,7 +324,7 @@ class SMFConnection {
 		return qry;
 	}
 
-	async update_forumTopic_LatestMsg(forumTopicId, latestMsgId) {
+	async update_forumTopic_wLatestMsg(forumTopicId, latestMsgId) {
 		const qry = await this.conn.query('UPDATE itsa_topics '
 			+ `SET id_last_msg = ${latestMsgId}, num_replies = num_replies + 1 `
 			+ `WHERE id_topic = ${forumTopicId};`);
@@ -340,6 +348,30 @@ class SMFConnection {
 			throw new Error('Could not get next message id.');
 		}
 		return msgId_qry[0].auto_increment;
+	}
+
+	async get_forumMsgId_fromDiscord(discordMsgId) {
+		const qry = await this.conn.query(`SELECT forum_messageId FROM discordmirror_messages WHERE discord_messageId LIKE '${discordMsgId}'`);
+		if (qry.length === 0) {
+			throw new Error(`Could not find message corresponding to Discord message ${discordMsgId} in \`discordmirror_messages\``);
+		}
+		return qry[0].forum_messageId;
+	}
+
+	async get_discordMsgId_fromForum(forumMsgId) {
+		const qry = await this.conn.query(`SELECT discord_messageId FROM discordmirror_messages WHERE forum_messageId = ${forumMsgId}`);
+		if (qry.length === 0) {
+			throw new Error(`Could not find Discord message corresponding to message ${forumMsgId} in \`discordmirror_messages\``);
+		}
+		return qry[0].discord_messageId;
+	}
+
+	async check_discordMsgMembership(discordMsgId) {
+		const qry = await this.conn.query('SELECT EXISTS '
+			+ `( SELECT 1 FROM discordmirror_messages WHERE discord_messageId LIKE '${discordMsgId}')`
+			+ 'AS isMember;');
+		// returns 0 for no, 1 for yes
+		return qry[0].isMember;
 	}
 
 	async put_msgIdPair(forumMsgId, discordMsgId) {
@@ -369,6 +401,17 @@ class SMFConnection {
             + `${myForumId}, '${title}', '${author}', '${myEmail}', '${content}'); `);
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error('Database new message INSERT failed.');
+		}
+		return qry;
+	}
+
+	async update_forumMsg(msgId, updaterName, content) {
+		// ASSUMES THE PERSON EDITING IS ALWAYS THE SAME AS THE ORIGINAL AUTHOR
+		const qry = await this.conn.query('UPDATE itsa_messages '
+			+ `SET body = '${content}', modified_time = UNIX_TIMESTAMP(), modified_name = '${updaterName}' `
+			+ `WHERE id_msg = ${msgId};`);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database message UPDATE failed.');
 		}
 		return qry;
 	}
