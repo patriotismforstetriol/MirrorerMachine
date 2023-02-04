@@ -101,7 +101,7 @@ function getForumReadyContent(message, author) {
 	output = output.replace(strikethroughRegex, '[s]$1[/s]');
 
 	if (realattachs.length > 0) {
-		return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${realattachs.join(' ')}\n${output}`;
+		return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${realattachs.join('\n')}\n${output}`;
 	} else {
 		return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${output}`;
 	}
@@ -118,23 +118,22 @@ function convertDiscordAttachmentToMarkdown(attachment) {
 	}
 
 	// TODO: add video and audio sync features.
-	/*
+
 	const isVideo = /^video\//g;
 	if (isVideo.test(attachment.contentType)) {
 		// unfortunately, clicking this causes immediate download rather than opening the video player. would like to fix.
-		return `[size=1][url=${attachment.proxyURL}]Video attachment: ${attachment.name}[/url][/size]`;
+		// return `[size=1][url=${attachment.proxyURL}]Video attachment: ${attachment.name}[/url][/size]`;
 		// SMF does not allow video or audio html elements.
-		// return `<video width="${attachment.width}" height="${attachment.height}" controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
-		//	'Your browser does not support this video element.</video>';
+		return `[html]<video width="${attachment.width}" height="${attachment.height}" controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
+			'Your browser does not support this video element.</video>[/html]';
 	}
 
 	const isAudio = /^audio\//g;
 	if (isAudio.test(attachment.contentType)) {
-		return `[size=1][url=${attachment.proxyURL}]Audio attachment: ${attachment.name}$[/url][/size]`;
-		// return `<audio controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
-		//	'Your browser does not support the audio element.</audio>';
+		// return `[size=1][url=${attachment.proxyURL}]Audio attachment: ${attachment.name}$[/url][/size]`;
+		return `[html]<audio controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
+			'Your browser does not support the audio element.</audio>[/html]';
 	}
-	*/
 
 	// Attachment not one of our supported types
 	return '[size=1][i]{unsupported attachment}[/i][/size]';
