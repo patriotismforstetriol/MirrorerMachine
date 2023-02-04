@@ -1,5 +1,5 @@
 // Library functions for syncing between Simple Machines Forum and Discord server
-const { Message } = require('discord.js');
+const { Message, Attachment } = require('discord.js');
 const mariadb = require('mariadb');
 const { dbUsername, dbHostname, dbPw, myForumId, myEmail } = require('./config.json');
 
@@ -35,10 +35,111 @@ function getSubjectLine(message) {
 exports.getSubjectLine = getSubjectLine;
 
 /** Adds an author disclaimer to the top of a Discord message string's content */
-function getForumReadyContent(messageBody, author) {
-	return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${messageBody}`;
+function getForumReadyContent(message, author) {
+	// Check that 'message' is a discord.js message object
+	if (!(message instanceof Message)) return undefined;
+
+	// SOURCE: https://codepen.io/intercaetera/pen/bgWdqe
+	// Regular expressions for Markdown
+	// Discord Markdown does not have headings. Sad.
+	/* const h1regex = /# (.*?)(?:\ *)\n/g;
+	const h2regex = /## (.*?)(?:\ *)\n/g;
+	const h3regex = /### (.*?)(?:\ *)\n/g;
+
+	const h1regexUnderline = /(.*?)\n={3,}/g;
+	const h2regexUnderline = /(.*?)\n-{3,}/g;
+
+	// Set replace values for headers
+	const h1replace = '[size=x-large][b]$1[/b][/size][hr]';
+	const h2replace = '[size=large]$1[/size][hr]';
+	const h3replace = '[size=medium]$1[/size]';
+	*/
+
+	const boldItalicRegex = /(?:\*\*\*|___)(.*?)(?:\*\*\*|___)(?![^\[]*\])/g;
+	const boldRegex = /(?:\*\*|__)(.*?)(?:\*\*|__)(?![^\[]*\])/g;
+	const italicRegex = /(?:\*|_)(.*?)(?:\*|_)(?![^\[]*\])/g;
+	const strikethroughRegex = /~~(.*?)~~/g;
+
+	const imgRegex = /!\[(?:.*?)\]\((.*?)\)/g;
+	const urlRegex = /\[(.*?)\]\((.*?)\)/g;
+	const codeRegex = /```(?:\ *)\n(.*?)(?:\ *)\n```/g;
+
+
+	let output = message.content;
+
+	console.log('values', message.attachments.values());
+
+	// Process attachments
+	const attachs = [];
+	for (const attachment of message.attachments.values()) {
+		attachs.push(convertDiscordAttachmentToMarkdown(attachment));
+	}
+	// Remove falsy values (eg undefineds)
+	const realattachs = attachs.filter(Boolean);
+
+	/* if (h3replace) {
+		output = output.replace(h3regex, h3replace);
+	}
+
+	if (h2replace) {
+		output = output.replace(h2regex, h2replace);
+		output = output.replace(h2regexUnderline, h2replace);
+	}
+
+	if (h1replace) {
+		output = output.replace(h1regex, h1replace);
+		output = output.replace(h1regexUnderline, h1replace);
+	}*/
+
+	output = output.replace(imgRegex, '[img]$1[/img]');
+	output = output.replace(urlRegex, '[url=$2]$1[/url]');
+	output = output.replace(codeRegex, '[code]$1[/code]');
+
+	output = output.replace(boldItalicRegex, '[b][i]$1[/i][/b]');
+	output = output.replace(boldRegex, '[b]$1[/b]');
+	output = output.replace(italicRegex, '[i]$1[/i]');
+	output = output.replace(strikethroughRegex, '[s]$1[/s]');
+
+	if (realattachs.length > 0) {
+		return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${realattachs.join(' ')}\n${output}`;
+	} else {
+		return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${output}`;
+	}
 }
 exports.getForumReadyContent = getForumReadyContent;
+
+function convertDiscordAttachmentToMarkdown(attachment) {
+	// Check that 'message' is a discord.js message object
+	if (!(attachment instanceof Attachment)) return undefined;
+
+	const isImg = /^image\//g;
+	if (isImg.test(attachment.contentType)) {
+		return `[img]${attachment.proxyURL}[/img]`;
+	}
+
+	// TODO: add video and audio sync features.
+	/*
+	const isVideo = /^video\//g;
+	if (isVideo.test(attachment.contentType)) {
+		// unfortunately, clicking this causes immediate download rather than opening the video player. would like to fix.
+		return `[size=1][url=${attachment.proxyURL}]Video attachment: ${attachment.name}[/url][/size]`;
+		// SMF does not allow video or audio html elements.
+		// return `<video width="${attachment.width}" height="${attachment.height}" controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
+		//	'Your browser does not support this video element.</video>';
+	}
+
+	const isAudio = /^audio\//g;
+	if (isAudio.test(attachment.contentType)) {
+		return `[size=1][url=${attachment.proxyURL}]Audio attachment: ${attachment.name}$[/url][/size]`;
+		// return `<audio controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
+		//	'Your browser does not support the audio element.</audio>';
+	}
+	*/
+
+	// Attachment not one of our supported types
+	return '[size=1][i]{unsupported attachment}[/i][/size]';
+
+}
 
 /* SMF DATABASE INTERACTION */
 
@@ -117,7 +218,7 @@ class SMFConnection {
 
 		// Get Mirrorer's name for the person who posted this
 		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
-		const msgContent = getForumReadyContent(discordMessageObject.content, usersName);
+		const msgContent = getForumReadyContent(discordMessageObject, usersName);
 		const msgTitle = getSubjectLine();
 
 		// Start transaction so that no other ID numbers can be added in the meantime.
@@ -145,7 +246,7 @@ class SMFConnection {
 	async sync_newMsgInTopic(discordMessageObject) {
 		// Get Mirrorer's name for the person who posted this
 		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
-		const msgContent = getForumReadyContent(discordMessageObject.content, usersName);
+		const msgContent = getForumReadyContent(discordMessageObject, usersName);
 
 		// Get forum id of this thread/topic
 		const topicId = await this.get_forumTopicId_fromDiscord(discordMessageObject.channelId);
@@ -172,7 +273,7 @@ class SMFConnection {
 	async sync_updateMsg(discordMessageObject) {
 		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
 		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
-		const newBody = getForumReadyContent(discordMessageObject.content, usersName);
+		const newBody = getForumReadyContent(discordMessageObject, usersName);
 
 		await this.update_forumMsg(msgId, usersName, newBody);
 	}
@@ -197,8 +298,7 @@ class SMFConnection {
 	async create_syncBoardTable() {
 		return await this.conn.query('CREATE TABLE discordmirror_boards('
             + 'discord_boardId VARCHAR(30) UNIQUE NOT NULL, '
-            + 'forum_boardId SMALLINT(5) UNSIGNED PRIMARY KEY, '
-            + 'FOREIGN KEY (forum_boardId) REFERENCES itsa_boards(id_board));');
+            + 'forum_boardId SMALLINT(5) UNSIGNED PRIMARY KEY);');
 	}
 
 	async check_discordBoardMembership(discordChannelId) {
@@ -260,8 +360,7 @@ class SMFConnection {
 	async create_syncTopicTable() {
 		return await this.conn.query('CREATE TABLE discordmirror_topics('
             + 'discord_topicId VARCHAR(30) UNIQUE NOT NULL, '
-            + 'forum_topicId MEDIUMINT(8) UNSIGNED PRIMARY KEY, '
-            + 'FOREIGN KEY (forum_topicId) REFERENCES itsa_boards(id_topic));');
+            + 'forum_topicId MEDIUMINT(8) UNSIGNED PRIMARY KEY);');
 	}
 
 	async get_forumTopicId_fromDiscord(discordTopicId) {
@@ -338,8 +437,7 @@ class SMFConnection {
 	async create_syncMsgTable() {
 		return await this.conn.query('CREATE TABLE discordmirror_messages('
             + 'discord_messageId VARCHAR(30) UNIQUE NOT NULL, '
-            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY, '
-            + 'FOREIGN KEY (forum_messageId) REFERENCES itsa_messages(id_msg));');
+            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY);');
 	}
 
 	async get_nextUnusedMsgId() {
