@@ -67,8 +67,6 @@ function getForumReadyContent(message, author) {
 
 	let output = message.content;
 
-	console.log('values', message.attachments.values());
-
 	// Process attachments
 	const attachs = [];
 	for (const attachment of message.attachments.values()) {
@@ -117,20 +115,14 @@ function convertDiscordAttachmentToMarkdown(attachment) {
 		return `[img]${attachment.proxyURL}[/img]`;
 	}
 
-	// TODO: add video and audio sync features.
-
 	const isVideo = /^video\//g;
 	if (isVideo.test(attachment.contentType)) {
-		// unfortunately, clicking this causes immediate download rather than opening the video player. would like to fix.
-		// return `[size=1][url=${attachment.proxyURL}]Video attachment: ${attachment.name}[/url][/size]`;
-		// SMF does not allow video or audio html elements.
 		return `[html]<video width="${attachment.width}" height="${attachment.height}" controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
 			'Your browser does not support this video element.</video>[/html]';
 	}
 
 	const isAudio = /^audio\//g;
 	if (isAudio.test(attachment.contentType)) {
-		// return `[size=1][url=${attachment.proxyURL}]Audio attachment: ${attachment.name}$[/url][/size]`;
 		return `[html]<audio controls="controls"><source src="${attachment.url}" type="${attachment.contentType}">` +
 			'Your browser does not support the audio element.</audio>[/html]';
 	}
@@ -218,7 +210,7 @@ class SMFConnection {
 		// Get Mirrorer's name for the person who posted this
 		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
 		const msgContent = getForumReadyContent(discordMessageObject, usersName);
-		const msgTitle = getSubjectLine();
+		const msgTitle = getSubjectLine(discordMessageObject);
 
 		// Start transaction so that no other ID numbers can be added in the meantime.
 		await this.beginTransaction();
@@ -274,7 +266,36 @@ class SMFConnection {
 		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
 		const newBody = getForumReadyContent(discordMessageObject, usersName);
 
-		await this.update_forumMsg(msgId, usersName, newBody);
+		this.update_forumMsg(msgId, usersName, newBody);
+	}
+
+	async sync_deleteMsg(discordMessageObject) {
+		// Is it the first message in a topic? Then it can't be deleted
+		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
+		const isTopic = await this.check_discordTopicMembership(discordMessageObject.id);
+		if (isTopic) {
+			const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+			const newBody = `[size=1][i][Message from Discord user ${usersName}]\n\n[Message deleted][/i][/size]`;
+			this.update_forumMsg(msgId, usersName, newBody);
+
+			// throw new Error('First messages in topics cannot be deleted.');
+		} else {
+			// It is a topic body message: delete it from discordmirror_messages and itsa_messages
+
+			// But first, if we need to update the latest message in topic field, do that.
+			try {
+				// If this does not raise an error, then the message is the last in the topic
+				const topicId = await this.get_forumTopicId_fromLastMsg(msgId);
+				// so the last message in topic field must be updated.
+				this.update_forumTopic_deleteLatestMsg(topicId, msgId);
+
+			} catch (err) {
+				// This is not a latest message
+			}
+
+			this.delete_msgIdPair(msgId, discordMessageObject.id);
+			this.delete_forumMsg(msgId);
+		}
 	}
 
 	/* Functions on: discordmirror_members */
@@ -386,6 +407,14 @@ class SMFConnection {
 		return qry[0].id_topic;
 	}
 
+	async get_forumTopicId_fromLastMsg(forumMsgId) {
+		const qry = await this.conn.query(`SELECT id_topic FROM itsa_topics WHERE id_last_msg=${forumMsgId};`);
+		if (qry.length === 0) {
+			throw new Error('Could not get topic id.');
+		}
+		return qry[0].id_topic;
+	}
+
 	async get_topicTitle_fromForumTopic(forumTopicId) {
 		const qry = await this.conn.query('SELECT subject FROM itsa_messages WHERE id_msg IN '
 			+ `(SELECT id_first_msg FROM itsa_topics WHERE id_topic=${forumTopicId});`);
@@ -432,6 +461,19 @@ class SMFConnection {
 		return qry;
 	}
 
+	async update_forumTopic_deleteLatestMsg(forumTopicId, latestMsgId) {
+		// latestMsgId is going to be deleted.
+		const predecessorMsg = await this.get_precedingMsg(latestMsgId);
+
+		const qry = await this.conn.query('UPDATE itsa_topics '
+			+ `SET id_last_msg = ${predecessorMsg}, num_replies = num_replies - 1 `
+			+ `WHERE id_topic = ${forumTopicId};`);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database topic UPDATE failed.');
+		}
+		return qry;
+	}
+
 	/* Functions on: discordmirror_messages */
 	async create_syncMsgTable() {
 		return await this.conn.query('CREATE TABLE discordmirror_messages('
@@ -463,6 +505,18 @@ class SMFConnection {
 		return qry[0].discord_messageId;
 	}
 
+	async get_precedingMsg(forumMsgId) {
+		// ASSUMES topic ids are unique even among multiple boards
+		const qry = await this.conn.query('SELECT id_msg FROM itsa_messages WHERE ' +
+			`poster_time < (SELECT poster_time FROM itsa_messages WHERE id_msg = ${forumMsgId} ) AND ` +
+			`id_topic = (SELECT id_topic FROM itsa_messages WHERE id_msg = ${forumMsgId}) ` +
+			'ORDER BY poster_time DESC LIMIT 1; ');
+		if (qry.length === 0) {
+			throw new Error(`Could not find preceding message in same topic as message ${forumMsgId}.`);
+		}
+		return qry[0].id_msg;
+	}
+
 	async check_discordMsgMembership(discordMsgId) {
 		const qry = await this.conn.query('SELECT EXISTS '
 			+ `( SELECT 1 FROM discordmirror_messages WHERE discord_messageId LIKE '${discordMsgId}')`
@@ -476,6 +530,15 @@ class SMFConnection {
             + `VALUES (${discordMsgId}, ${forumMsgId}); `);
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error('Database new message link INSERT failed.');
+		}
+		return qry;
+	}
+
+	async delete_msgIdPair(forumMsgId, discordMsgId) {
+		const qry = await this.conn.query('DELETE FROM discordmirror_messages '
+            + `WHERE discord_messageId LIKE '${discordMsgId}' AND forum_messageID = ${forumMsgId}; `);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database message link DELETE failed.');
 		}
 		return qry;
 	}
@@ -509,6 +572,16 @@ class SMFConnection {
 			+ `WHERE id_msg = ${msgId};`);
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error('Database message UPDATE failed.');
+		}
+		return qry;
+	}
+
+	async delete_forumMsg(msgId) {
+		// ASSUMES YOU HAVE ALREADY CHECKED IT IS NOT A TOPIC STARTER
+		const qry = await this.conn.query('DELETE FROM itsa_messages '
+			+ `WHERE id_msg=${msgId}; `);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database message DELETE failed.');
 		}
 		return qry;
 	}

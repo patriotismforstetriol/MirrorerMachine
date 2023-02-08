@@ -28,6 +28,8 @@ module.exports = {
 					.catch(error => console.error('Failed to remove reactions:', error));
 				await newMessage.react('🌐');
 			}
+
+			await db.end();
 		} catch (err) {
 			console.log('Failed to connect to db due to ', err);
 			await newMessage.reply('Failed to connect to my database!');

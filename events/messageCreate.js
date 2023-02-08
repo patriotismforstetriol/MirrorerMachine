@@ -21,7 +21,8 @@ module.exports = {
 				// So this message starts a new topic/thread
 
 				// First create the thread in Discord
-				const subjectline = getSubjectLine();
+				const subjectline = getSubjectLine(message);
+				console.log(subjectline);
 				await message.startThread({
 					name: subjectline,
 				}).catch(console.error);
