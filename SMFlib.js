@@ -228,6 +228,8 @@ class SMFConnection {
 		// End transaction if we got this far.
 		await this.commit();
 
+		await this.update_boardStats(board);
+
 		// Track them in our discord link databases too
 		// Note: thread id is same as founder message id
 		await this.put_topicIdPair(topicId, discordMessageObject.id);
@@ -256,6 +258,8 @@ class SMFConnection {
 		await this.update_forumTopic_wLatestMsg(topicId, msgId);
 
 		await this.commit();
+
+		await this.update_boardStats(boardId);
 
 		// Track msg in our discord link database
 		await this.put_msgIdPair(msgId, discordMessageObject.id);
@@ -296,6 +300,9 @@ class SMFConnection {
 			this.delete_msgIdPair(msgId, discordMessageObject.id);
 			this.delete_forumMsg(msgId);
 		}
+
+		const boardId = await this.get_forumBoardId_fromDiscord(discordMessageObject.channelId);
+		await this.update_boardStats(boardId);
 	}
 
 	/* Functions on: discordmirror_members */
@@ -372,6 +379,20 @@ class SMFConnection {
             + `VALUES (${forumBoardId}, "${discordBoardId}");`);
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error(`Insert (${forumBoardId}, "${discordBoardId}") into sync board table failed.`);
+		}
+		return qry;
+	}
+
+	async update_boardStats(forumBoardId) {
+		// Query duplicates finding latest message. Not sure that's good.
+		const qry = await this.conn.query('UPDATE itsa_boards '
+			+ `SET id_last_msg = (SELECT id_msg FROM itsa_messages WHERE id_board = ${forumBoardId} ORDER BY poster_time DESC LIMIT 1), `
+			+ `id_msg_updated = (SELECT id_msg FROM itsa_messages WHERE id_board = ${forumBoardId} ORDER BY poster_time DESC LIMIT 1), `
+			+ `num_topics = (SELECT COUNT(*) FROM itsa_topics WHERE id_board = ${forumBoardId}), `
+			+ `num_posts = (SELECT COUNT(*) FROM itsa_messages WHERE id_board = ${forumBoardId}) `
+			+ `WHERE id_board = ${forumBoardId};`);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database board UPDATE failed.');
 		}
 		return qry;
 	}
