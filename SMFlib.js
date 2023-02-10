@@ -12,7 +12,7 @@ function getSubjectLine(message) {
 	if (!(message instanceof Message)) return undefined;
 
 	let subjectline;
-	if (message.content.length > 81) {
+	if (message.content.length <= 81) {
 		// if message length <= 81: start a thread with that message as both title and content
 		subjectline = message.content;
 
@@ -203,14 +203,14 @@ class SMFConnection {
 		});
 	}
 
-	async sync_newTopic(discordMessageObject) {
+	async sync_newTopic(discordMessageObject, topicName = undefined) {
 		// Get board ID of board that corresponds to this channel
 		const board = await this.get_forumBoardId_fromDiscord(discordMessageObject.channelId);
 
 		// Get Mirrorer's name for the person who posted this
 		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
 		const msgContent = getForumReadyContent(discordMessageObject, usersName);
-		const msgTitle = getSubjectLine(discordMessageObject);
+		const msgTitle = topicName === undefined ? getSubjectLine(discordMessageObject) : topicName;
 
 		// Start transaction so that no other ID numbers can be added in the meantime.
 		await this.beginTransaction();
@@ -547,7 +547,8 @@ class SMFConnection {
 		const qry = await this.conn.query('INSERT INTO itsa_messages '
             + '(id_topic, id_board, poster_time, id_member, subject, poster_name, poster_email, body) '
             + `VALUES (${forumTopicId}, ${forumBoardId}, UNIX_TIMESTAMP(), `
-            + `${myForumId}, '${title}', '${author}', '${myEmail}', '${content}'); `);
+            + `${myForumId}, ` + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
+			+ this.conn.escape(myEmail) + ', ' + this.conn.escape(content) + '); ');
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error('Database new message INSERT failed.');
 		}
@@ -558,7 +559,8 @@ class SMFConnection {
 		const qry = await this.conn.query('INSERT INTO itsa_messages '
             + '(id_msg, id_topic, id_board, poster_time, id_member, subject, poster_name, poster_email, body) '
             + `VALUES (${msgId}, ${forumTopicId}, ${forumBoardId}, UNIX_TIMESTAMP(), `
-            + `${myForumId}, '${title}', '${author}', '${myEmail}', '${content}'); `);
+            + `${myForumId}, ` + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
+			+ this.conn.escape(myEmail) + ', ' + this.conn.escape(content) + '); ');
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error('Database new message INSERT failed.');
 		}
@@ -568,8 +570,8 @@ class SMFConnection {
 	async update_forumMsg(msgId, updaterName, content) {
 		// ASSUMES THE PERSON EDITING IS ALWAYS THE SAME AS THE ORIGINAL AUTHOR
 		const qry = await this.conn.query('UPDATE itsa_messages '
-			+ `SET body = '${content}', modified_time = UNIX_TIMESTAMP(), modified_name = '${updaterName}' `
-			+ `WHERE id_msg = ${msgId};`);
+			+ 'SET body = ' + this.conn.escape(content) + ', modified_time = UNIX_TIMESTAMP(), modified_name = '
+			+ this.conn.escape(updaterName) + ` WHERE id_msg = ${msgId};`);
 		if (qry.constructor.name !== 'OkPacket') {
 			throw new Error('Database message UPDATE failed.');
 		}

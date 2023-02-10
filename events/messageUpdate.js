@@ -19,7 +19,7 @@ module.exports = {
 				// Temporarily remove emoticon reaction, for buffering
 				newMessage.reactions.cache.get('🌐').remove()
 					.catch(error => console.error('Failed to remove reactions:', error));
-				newMessage.react('⏳');
+				await newMessage.react('⏳');
 
 				// modify the content of the message
 				await db.sync_updateMsg(newMessage);
