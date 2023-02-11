@@ -55,15 +55,19 @@ function getForumReadyContent(message, author) {
 	const h3replace = '[size=medium]$1[/size]';
 	*/
 
-	const boldItalicRegex = /(?:\*\*\*|___)(.*?)(?:\*\*\*|___)(?![^\[]*\])/g;
-	const boldRegex = /(?:\*\*|__)(.*?)(?:\*\*|__)(?![^\[]*\])/g;
+	const boldItalicRegex = /\*\*\*(.*?)\*\*\*/g;
+	const boldRegex = /\*\*(.*?)\*\*/g;
 	const italicRegex = /(?:\*|_)(.*?)(?:\*|_)(?![^\[]*\])/g;
 	const strikethroughRegex = /~~(.*?)~~/g;
+	const underlineRegex = /__(.*?)__/g;
+	// Multiline block quotes (>>> ) are just converted to consecutive lines of singleline (> ) quotes. As tested Feb 2023
+	const lineQuoteRegex = /> (.*?)($|[\n\r])/g;
+	const blockQuoteCleanupRegex = /\[\/quote\]\[quote\]/g;
+	const lineCodeRegex = /`(.*?)`/g;
 
 	const imgRegex = /!\[(?:.*?)\]\((.*?)\)/g;
 	const urlRegex = /\[(.*?)\]\((.*?)\)/g;
 	const codeRegex = /```(?:\ *)\n(.*?)(?:\ *)\n```/g;
-
 
 	let output = message.content;
 
@@ -94,9 +98,13 @@ function getForumReadyContent(message, author) {
 	output = output.replace(codeRegex, '[code]$1[/code]');
 
 	output = output.replace(boldItalicRegex, '[b][i]$1[/i][/b]');
+	output = output.replace(underlineRegex, '[u]$1[/u]'); // must be before italics regex
 	output = output.replace(boldRegex, '[b]$1[/b]');
 	output = output.replace(italicRegex, '[i]$1[/i]');
 	output = output.replace(strikethroughRegex, '[s]$1[/s]');
+	output = output.replace(lineQuoteRegex, '[quote]$1[/quote]');
+	output = output.replace(blockQuoteCleanupRegex, '\n');
+	output = output.replace(lineCodeRegex, '[pre]$1[/pre]');
 
 	if (realattachs.length > 0) {
 		return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${realattachs.join('\n')}\n${output}`;
