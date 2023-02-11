@@ -450,7 +450,7 @@ class SMFConnection {
 		if (qry.length === 0) {
 			throw new Error('Could not get topic title.');
 		}
-		return `Re: ${qry[0].id_topic}`;
+		return `Re: ${qry[0].subject}`;
 	}
 
 	async check_discordTopicMembership(discordChannelId) {
