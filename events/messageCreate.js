@@ -22,7 +22,6 @@ module.exports = {
 
 				// First create the thread in Discord
 				const subjectline = getSubjectLine(message);
-				console.log(subjectline);
 				await message.startThread({
 					name: subjectline,
 				}).catch(console.error);
