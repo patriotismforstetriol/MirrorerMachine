@@ -1,7 +1,7 @@
 // Library functions for syncing between Simple Machines Forum and Discord server
 const { Message, Attachment } = require('discord.js');
 const mariadb = require('mariadb');
-const { dbUsername, dbHostname, dbPw, myForumId, myEmail } = require('./config.json');
+const { dbUsername, dbHostname, dbPw, clientId, myForumId, myEmail } = require('./config.json');
 
 
 /* GENERAL CATEGORY */
@@ -65,9 +65,11 @@ function getForumReadyContent(message, author) {
 	const blockQuoteCleanupRegex = /\[\/quote\]\[quote\]/g;
 	const lineCodeRegex = /`(.*?)`/g;
 
-	const imgRegex = /!\[(?:.*?)\]\((.*?)\)/g;
-	const urlRegex = /\[(.*?)\]\((.*?)\)/g;
-	const codeRegex = /```(?:\ *)\n(.*?)(?:\ *)\n```/g;
+	// const imgRegex = /!\[(?:.*?)\]\((.*?)\)/g; // Discord does not support images
+	// const urlRegex = /\[(.*?)\]\((.*?)\)/g; // Regular Discord messages don't support regular links
+	// Url regex that should exclude phrasal punctuation (, .) at the end of url. Inspired by Niaz Mohammed https://stackoverflow.com/questions/1500260/detect-urls-in-text-with-javascript
+	const urlRegex = /((https?|ftp|file):\/\/[-A-Za-z0-9+&@#/%?=~_|!:,.;()]+[-A-Za-z0-9+&@#\/%=~_|()])[.,):;\s]/g;
+	const codeRegex = /```(?: *)\n(.*?)(?: *)\n```/g;
 
 	let output = message.content;
 
@@ -93,8 +95,8 @@ function getForumReadyContent(message, author) {
 		output = output.replace(h1regexUnderline, h1replace);
 	}*/
 
-	output = output.replace(imgRegex, '[img]$1[/img]');
-	output = output.replace(urlRegex, '[url=$2]$1[/url]');
+	// output = output.replace(imgRegex, '[img]$1[/img]');
+	output = output.replace(urlRegex, '[iurl]$1[/iurl]');
 	output = output.replace(codeRegex, '[code]$1[/code]');
 
 	output = output.replace(boldItalicRegex, '[b][i]$1[/i][/b]');
@@ -118,49 +120,56 @@ function getDiscordReadyContent(messageContent, author) {
 	// BBCode tags without discord equivalents:
 	// Center; email; flash; font; ftp; glow; move; nobbc; left; right; size; subscript; superscript; tables
 
+	// BBCode tags with Discord equivalents:
+	// Bold; italics; strikethrough; underline; monospace; image; url; member link; multiline quote; multiline code;
+
 	const boldItalicRegex = /\*\*\*(.*?)\*\*\*/g;
 	const boldRegex = /\[b\](.*?)\[\/b\]/g;
 	const italicRegex = /\[i\](.*?)\[\/i\]/g;
 	const strikethroughRegex = /\[s\](.*?)\[\/s\]/g;
 	const underlineRegex = /\[u\](.*?)\[\/u\]/g;
-	// Multiline block quotes (>>> ) are just converted to consecutive lines of singleline (> ) quotes. As tested Feb 2023
-	const quoteRegex = /\[quote\](.*?)/g; //@@
 	const lineCodeRegex = /\[pre\](.*?)\[\/pre\]/g;
 
-	const imgRegex = /\[img(.*)\](?:.*?)\[\/img\]/g;
-	const urlRegex = /\[url\](.*?)\[\/url\]/g;
-	const codeRegex = /\[code\](?:\ *)\n(.*?)(?:\ *)\n```/g;
-
+	const imgRegex = /\[img(.*)\](.*?)\[\/img\]/g;
+	const urlRegex = /\[url=("?)?(.*?)("?)?\](.*?)\[\/url\]/g;
 	const urlRegex2 = /\[iurl\](.*?)\[\/iurl\]/g;
+	const memberRegex = /\[member=(.*?)\](.*?)\[\/member\]/g;
+
+	// Multiline block quotes (>>> ) are just converted to consecutive lines of singleline (> ) quotes. As tested Feb 2023
+	const quoteRegex = /\[quote\](.*?)\[\/quote\]/gs;
+	const codeRegex = /\[code\](.*?)\[\/code\]/gs;
 
 	let output = messageContent;
 
-	/*// Process attachments
-	const attachs = [];
-	for (const attachment of message.attachments.values()) {
-		attachs.push(convertDiscordAttachmentToMarkdown(attachment));
-	}
-	// Remove falsy values (eg undefineds)
-	const realattachs = attachs.filter(Boolean);
+	// Attachments just exist as links I believe. @ check this fact.
 
-	output = output.replace(imgRegex, '[img]$1[/img]');
-	output = output.replace(urlRegex, '[url=$2]$1[/url]');
-	output = output.replace(codeRegex, '[code]$1[/code]');
+	output = output.replace(/<br>/g, '\n');
+	output = output.replace(/&nbsp;?/g, ' ');
+	output = output.replace(/&amp;?/g, '&');
+	output = output.replace(/&lt;?/g, '<');
+	output = output.replace(/&gt;?/g, '>');
+	output = output.replace(/&quot;?/g, '"');
+	output = output.replace(/&#[0]?39;?/g, '\'');
 
-	output = output.replace(boldItalicRegex, '[b][i]$1[/i][/b]');
-	output = output.replace(underlineRegex, '[u]$1[/u]'); // must be before italics regex
-	output = output.replace(boldRegex, '[b]$1[/b]');
-	output = output.replace(italicRegex, '[i]$1[/i]');
-	output = output.replace(strikethroughRegex, '[s]$1[/s]');
-	output = output.replace(lineQuoteRegex, '[quote]$1[/quote]');
-	output = output.replace(blockQuoteCleanupRegex, '\n');
-	output = output.replace(lineCodeRegex, '[pre]$1[/pre]');*/
+	output = output.replace(imgRegex, '$2 ');
+	output = output.replace(urlRegex, '$4 ($2) ');
+	output = output.replace(urlRegex2, '$1 ');
+	output = output.replace(codeRegex, '```\n$1\n``` ');
+	output = output.replace(quoteRegex, (match, capture1, offset, fullString) => {
+		const formattedQuote = capture1.trim().replace(/[\n\r]/gs, '\n> ');
+		// return fullString.slice(0,offset) + '> ' + formattedQuote + '\n' + fullString.slice(offset + match.length);
+		return '> ' + formattedQuote + '\n';
+	});
 
-	// if (realattachs.length > 0) {
-	// 	return `[size=1][i][Message from Discord user ${author}][/i][/size]\n\n${realattachs.join('\n')}\n${output}`;
-	// } else {
+	output = output.replace(boldItalicRegex, '***$1***');
+	output = output.replace(underlineRegex, '__$1__');
+	output = output.replace(boldRegex, '**$1**');
+	output = output.replace(italicRegex, '*$1*');
+	output = output.replace(strikethroughRegex, '~~$1~~');
+	output = output.replace(lineCodeRegex, '`$1`');
+	output = output.replace(memberRegex, `@$2 (${dbHostname}/forums/index.php?action=profile;u=$1)`);
+
 	return `*[Message from forum user ${author}]*\n\n${output}`;
-	// }
 }
 
 function convertDiscordAttachmentToMarkdown(attachment) {
@@ -285,12 +294,12 @@ class SMFConnection {
 		// End transaction if we got this far.
 		await this.commit();
 
-		await this.update_boardStats(board);
+		this.update_boardStats(board);
 
 		// Track them in our discord link databases too
 		// Note: thread id is same as founder message id
-		await this.put_topicIdPair(topicId, discordMessageObject.id);
-		await this.put_msgIdPair(msgId, discordMessageObject.id);
+		this.put_topicIdPair(topicId, discordMessageObject.id);
+		this.put_msgIdPair(msgId, discordMessageObject.id);
 	}
 
 	async sync_newMsgInTopic(discordMessageObject) {
@@ -406,7 +415,7 @@ class SMFConnection {
 	}
 
 	async get_discordBoardId_fromForum(forumBoardId) {
-		const qry = await this.conn.query(`SELECT discord_boardId FROM discordmirror_boards WHERE forum_boardId = ${forumBoardId}`);
+		const qry = await this.conn.query(`SELECT discord_boardId FROM discordmirror_boards WHERE forum_boardId = ${forumBoardId};`);
 		if (qry.length === 0) {
 			throw new Error(`Could not find Discord channel corresponding to board ${forumBoardId} in \`discordmirror_boards\``);
 		}
@@ -564,7 +573,8 @@ class SMFConnection {
 	async create_syncMsgTable() {
 		return await this.conn.query('CREATE TABLE discordmirror_messages('
             + 'discord_messageId VARCHAR(30) UNIQUE NOT NULL, '
-            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY);');
+            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY, '
+			+ 'last_sync int(10) unsigned NOT NULL DEFAULT UNIX_TIMESTAMP());');
 	}
 
 	async get_nextUnusedMsgId() {
@@ -674,7 +684,7 @@ class SMFConnection {
 		return qry;
 	}
 
-	async check_latestMessageTime() {
+	async get_latestMessageTime() {
 		const qry = await this.conn.query('SELECT update_time FROM information_schema.tables '
 			+ 'WHERE TABLE_SCHEMA = \'forums\' AND TABLE_name = \'itsa_messages\';');
 		if (qry.length === 0) {
@@ -685,58 +695,131 @@ class SMFConnection {
 
 	async get_newForumPosts_sinceTime(time) {
 		const qry = await this.conn.query('SELECT * FROM itsa_messages WHERE ' +
-			`poster_time > ${time.getTime()} AND ` +
+			`poster_time > ${time.getTime() / 1000} AND ` +
 			'id_msg NOT IN (SELECT forum_messageId FROM discordmirror_messages) AND ' +
 			'discord_original IS FALSE ORDER BY poster_time ASC; ');
 		return qry;
 	}
 
-	async share_msgs(client, msgs) {
-		const msgsToShare = [];
-		for (const [index, newPost] of msgs.entries()) {
-			msgsToShare[index] = this.get_msgToShare(client, newPost);
-		}
-
-		// Msgs need fields: .content, .thread, .postTime, .threadSubject if are threadStarters
+	async get_updatedForumPosts_sinceTime(time) {
+		const qry = await this.conn.query('SELECT * FROM itsa_messages WHERE ' +
+			`modified_time <> 0 AND modified_time > ${time.getTime() / 1000} AND ` +
+			'id_msg IN (SELECT forum_messageId FROM discordmirror_messages) AND ' +
+			'discord_original IS FALSE ORDER BY poster_time ASC; ');
+		return qry;
 	}
 
-	async get_msgToShare(client, msg) {
-		let threadId = undefined;
+	/* async get_syncTime_ofForumMsg(forumMsgId) {
+		const qry = await this.conn.query('SELECT sync_time FROM discordmirror_messages WHERE ' +
+			`forum_messageId = ${forumMsgId};`);
+		return qry;
+	}*/
+
+	async get_DHome_fromFTopic(FTopicId) {
+		// Get Discord home (channel if thread needs to be started, thread if thread continuer)
+		// of a forum thread
+
+		// If we are a thread starter (that is, our thread Id doesn't exist in discordmirror_)
+		const hasExistingThread = await this.check_forumTopicMembership(FTopicId);
+
+		if (hasExistingThread) {
+			// We are a thread continuer. Find discord thread.
+			// This call could fail if we are trying to add this message before its thread starter.
+			// Hence the try statement. If it fails we'll try again next round.
+			return await this.get_discordTopicId_fromForum(FTopicId);
+
+		} else {
+			// Find the discord channel corresponding to the right board
+			return await this.get_discordBoardId_fromForum(FTopicId);
+
+		}
+	}
+
+	async syncF_newMsg(client, msg) {
+		// Step 1: Get DHome of msg's Topic.
+
+		let dHome = undefined;
 		// If we are a thread starter (that is, our thread Id doesn't exist in discordmirror_)
 		const hasExistingThread = await this.check_forumTopicMembership(msg.id_topic);
-
-		console.log("Msg: ", msg.id_msg, hasExistingThread);
 
 		try {
 			if (hasExistingThread) {
 				// We are a thread continuer. Find discord thread.
 				// This call could fail if we are trying to add this message before its thread starter.
 				// Hence the try statement. If it fails we'll try again next round.
-				threadId = await this.get_discordTopicId_fromForum(msg.id_topic);
+				dHome = await this.get_discordTopicId_fromForum(msg.id_topic);
 
 			} else {
 				// Find the discord channel corresponding to the right board
-				threadId = await this.get_discordBoardId_fromForum(msg.id_board);
-
+				dHome = await this.get_discordBoardId_fromForum(msg.id_board);
 			}
 		} catch (err) {
 			console.log('Could not find a place to put message ', msg.id_msg);
 		}
 
-		// Then post the message
-		const topic = await client.channels.fetch(threadId).catch(err => console.log('Could not find thread channel due to ', err));
+		// Step 2: post the message
+		const topic = await client.channels.fetch(dHome).catch(err => console.log('Could not find thread channel due to ', err));
 		const content = getDiscordReadyContent(msg.body, msg.poster_name); //@
 		const dmsg = await topic.send(content);
 		await this.put_msgIdPair(msg.id_msg, dmsg.id);
 
+		// Step 3: Start thread if it was a thread starter
 		if (!hasExistingThread) {
 			// Make a thread corresponding to the topic
-			await dmsg.startThread({
-				name: msg.subject,
-			}).catch(console.error);
-
-			await this.put_topicIdPair(msg.id_topic, dmsg.id);
+			await Promise.allSettled([
+				dmsg.startThread({ name: msg.subject }).catch(console.error),
+				this.put_topicIdPair(msg.id_topic, dmsg.id),
+			]);
 		}
+
+		this.update_syncTime(msg.id_msg);
+	}
+
+	static async get_discordMessage(client, channelId, messageId) {
+		const channel = await client.channels.fetch(channelId);
+		if (channel === undefined || channel.constructor.name === 'Collection') {
+			throw new Error(`Could not find specific channel id ${channelId}`);
+		}
+
+		const targetMsg = await channel.messages.fetch(messageId);
+		if (targetMsg === undefined || targetMsg.constructor.name === 'Collection') {
+			throw new Error(`Could not find specific message id ${messageId}`);
+		} else {
+			return targetMsg;
+		}
+	}
+
+	/* async update_syncTime(forumMsgId) {
+		const qry = await this.conn.query('UPDATE discordmirror_messages SET '
+			+ 'sync_time = UNIX_TIMESTAMP() '
+			+ `WHERE forum_messageId = ${forumMsgId};`);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database message UPDATE failed.');
+		}
+		return qry;
+	}*/
+
+	async syncF_update(client, msg) {
+		// get the Discord message object, then substitute the content in that message with the updated contents
+		let discordChannelId = await this.get_discordTopicId_fromForum(msg.id_topic);
+		const discordMessageId = await this.get_discordMsgId_fromForum(msg.id_msg);
+		if (discordChannelId === discordMessageId) {
+			// then this is a thread starter so channel needs to be a discord channel, not a thread ID
+			discordChannelId = await this.get_discordBoardId_fromForum(msg.id_board);
+		}
+		const discordMsg = await SMFConnection.get_discordMessage(client, discordChannelId, discordMessageId);
+
+		const content = getDiscordReadyContent(msg.body, msg.poster_name);
+
+		if (discordMsg.author.id === clientId) {
+			// we can only update the message if Mirrorer is the original author.
+			discordMsg.edit(content);
+		} else {
+			console.log(`Could not sync forum edit of Discord message ${discordChannelId}/${discordMessageId}` +
+				' because the post is a Discord original.');
+		}
+
+		this.update_syncTime(msg.id_msg);
 	}
 }
 exports.SMFConnection = SMFConnection;

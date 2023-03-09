@@ -27,7 +27,7 @@ module.exports = {
 				}).catch(console.error);
 
 				// Then copy thread topic and post to SMF
-				await db.sync_newTopic(message);
+				await db.sync_newTopic(message, subjectline);
 				await message.react('🌐');
 
 			} else {
