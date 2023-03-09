@@ -123,7 +123,6 @@ function getDiscordReadyContent(messageContent, author) {
 	// BBCode tags with Discord equivalents:
 	// Bold; italics; strikethrough; underline; monospace; image; url; member link; multiline quote; multiline code;
 
-	const boldItalicRegex = /\*\*\*(.*?)\*\*\*/g;
 	const boldRegex = /\[b\](.*?)\[\/b\]/g;
 	const italicRegex = /\[i\](.*?)\[\/i\]/g;
 	const strikethroughRegex = /\[s\](.*?)\[\/s\]/g;
@@ -161,7 +160,6 @@ function getDiscordReadyContent(messageContent, author) {
 		return '> ' + formattedQuote + '\n';
 	});
 
-	output = output.replace(boldItalicRegex, '***$1***');
 	output = output.replace(underlineRegex, '__$1__');
 	output = output.replace(boldRegex, '**$1**');
 	output = output.replace(italicRegex, '*$1*');
@@ -244,27 +242,39 @@ class SMFConnection {
 
 	/* Higher level methods */
 	async create_syncTables() {
-		await this.create_syncMemberTable().then((value) => {
+		this.create_syncMemberTable().then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
 				throw new Error('Sync member table creation failed.');
 			}
 		});
 
-		await this.create_syncBoardTable().then((value) => {
+		this.create_syncBoardTable().then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
 				throw new Error('Sync boards table creation failed.');
 			}
 		});
 
-		await this.create_syncTopicTable().then((value) => {
+		this.create_syncTopicTable().then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
 				throw new Error('Sync topic table creation failed.');
 			}
 		});
 
-		await this.creatE_syncMsgTable().then((value) => {
+		this.create_syncMsgTable().then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
 				throw new Error('Sync messages table creation failed.');
+			}
+		});
+
+		this.create_unsyncedDeletionsTable().then((value) => {
+			if (value.constructor.name !== 'OkPacket') {
+				throw new Error('Unsynced deletions table creation failed.');
+			}
+		});
+
+		this.create_lastSyncsTable().then((value) => {
+			if (value.constructor.name !== 'OkPacket') {
+				throw new Error('Last sync times table creation failed.');
 			}
 		});
 	}
@@ -373,10 +383,46 @@ class SMFConnection {
 
 	/* Functions on: discordmirror_members */
 	async create_syncMemberTable() {
-		return await this.conn.query('CREATE TABLE discordmirror_members('
+		return this.conn.query('CREATE TABLE discordmirror_members('
             + 'discordid_member VARCHAR(30) PRIMARY KEY, '
             + 'discord_member_name VARCHAR(80) UNIQUE NOT NULL, '
             + 'date_registered DATE NOT NULL DEFAULT CURRENT_DATE);');
+	}
+
+	async create_unsyncedDeletionsTable() {
+		return this.conn.query('CREATE TABLE discordmirror_unsynced_deletions('
+            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY, '
+            + 'forum_topicId MEDIUMINT(8) UNSIGNED NOT NULL, '
+			+ 'forum_boardId SMALLINT(5) UNSIGNED NOT NULL);'
+			).then((value) => {
+				if (value.constructor.name !== 'OkPacket') {
+					return value;
+				} else {
+					return this.conn.query('CREATE TRIGGER FMsgDelete AFTER DELETE ON itsa_messages '
+					+ 'FOR EACH ROW INSERT INTO discordmirror_unsynced_deletions(forum_messageId, forum_topicId, forum_boardId) '
+					+ 'VALUES (old.id_msg, old.id_topic, old.id_board);');
+				}
+			}).then((value) => {
+				if (value.constructor.name !== 'OkPacket') {
+					return value;
+				} else {
+					return this.conn.query(`GRANT DROP ON TABLE discordmirror_unsynced_deletions TO '${dbUsername}'@'%';`); //@@ safety of this line
+				}
+			});
+	}
+
+	async create_lastSyncsTable() {
+		return this.conn.query('CREATE TABLE discordmirror_lastsyncs('
+			+ 'forum BOOLEAN PRIMARY KEY, '
+			+ 'sync_time int(10) UNSIGNED DEFAULT 0);'
+			).then((value) => {
+				if (value.constructor.name !== 'OkPacket') {
+					return value;
+				} else {
+					return this.conn.query('INSERT INTO discordmirror_lastsyncs(forum, sync_time) '
+						+ 'VALUES (TRUE,0), (FALSE,0);');
+				}
+			});
 	}
 
 	async get_discordMemberName(discordMemberId) {
@@ -573,8 +619,7 @@ class SMFConnection {
 	async create_syncMsgTable() {
 		return await this.conn.query('CREATE TABLE discordmirror_messages('
             + 'discord_messageId VARCHAR(30) UNIQUE NOT NULL, '
-            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY, '
-			+ 'last_sync int(10) unsigned NOT NULL DEFAULT UNIX_TIMESTAMP());');
+            + 'forum_messageId int(10) UNSIGNED PRIMARY KEY);');
 	}
 
 	async get_nextUnusedMsgId() {
@@ -639,6 +684,15 @@ class SMFConnection {
 		return qry;
 	}
 
+	async delete_topicIdPair(forumTopicId, discordTopicId) {
+		const qry = await this.conn.query('DELETE FROM discordmirror_topics '
+            + `WHERE discord_topicId LIKE '${discordTopicId}' AND forum_topicID = ${forumTopicId}; `);
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database message link DELETE failed.');
+		}
+		return qry;
+	}
+
 	async put_newMsg(forumTopicId, forumBoardId, author, title, content) {
 		const qry = await this.conn.query('INSERT INTO itsa_messages '
             + '(id_topic, id_board, discord_original, poster_time, id_member, subject, poster_name, poster_email, body) '
@@ -695,7 +749,7 @@ class SMFConnection {
 
 	async get_newForumPosts_sinceTime(time) {
 		const qry = await this.conn.query('SELECT * FROM itsa_messages WHERE ' +
-			`poster_time > ${time.getTime() / 1000} AND ` +
+			`poster_time > ${time} AND ` +
 			'id_msg NOT IN (SELECT forum_messageId FROM discordmirror_messages) AND ' +
 			'discord_original IS FALSE ORDER BY poster_time ASC; ');
 		return qry;
@@ -703,7 +757,7 @@ class SMFConnection {
 
 	async get_updatedForumPosts_sinceTime(time) {
 		const qry = await this.conn.query('SELECT * FROM itsa_messages WHERE ' +
-			`modified_time <> 0 AND modified_time > ${time.getTime() / 1000} AND ` +
+			`modified_time <> 0 AND modified_time > ${time} AND ` +
 			'id_msg IN (SELECT forum_messageId FROM discordmirror_messages) AND ' +
 			'discord_original IS FALSE ORDER BY poster_time ASC; ');
 		return qry;
@@ -736,6 +790,7 @@ class SMFConnection {
 	}
 
 	async syncF_newMsg(client, msg) {
+		console.log('Creating msg ', msg.id_msg, 'of topic', msg.id_topic);
 		// Step 1: Get DHome of msg's Topic.
 
 		let dHome = undefined;
@@ -772,7 +827,7 @@ class SMFConnection {
 			]);
 		}
 
-		this.update_syncTime(msg.id_msg);
+		this.update_FsyncTime(msg.id_msg);
 	}
 
 	static async get_discordMessage(client, channelId, messageId) {
@@ -789,17 +844,30 @@ class SMFConnection {
 		}
 	}
 
-	/* async update_syncTime(forumMsgId) {
-		const qry = await this.conn.query('UPDATE discordmirror_messages SET '
+	async update_FsyncTime() {
+		return await this.conn.query('UPDATE discordmirror_lastsyncs SET '
 			+ 'sync_time = UNIX_TIMESTAMP() '
-			+ `WHERE forum_messageId = ${forumMsgId};`);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database message UPDATE failed.');
-		}
-		return qry;
-	}*/
+			+ 'WHERE forum IS TRUE;');
+	}
+
+	async update_DsyncTime() {
+		return await this.conn.query('UPDATE discordmirror_lastsyncs SET '
+			+ 'sync_time = UNIX_TIMESTAMP() '
+			+ 'WHERE forum IS FALSE;');
+	}
+
+	async get_FLastSyncTime() {
+		return await this.conn.query('SELECT sync_time FROM discordmirror_lastsyncs '
+			+ 'WHERE forum IS TRUE;').then((value) => { return value[0].sync_time; } );
+	}
+
+	async get_DLastSyncTime() {
+		return await this.conn.query('SELECT sync_time FROM discordmirror_lastsyncs '
+			+ 'WHERE forum IS FALSE;').then((value) => { return value[0].sync_time; } );
+	}
 
 	async syncF_update(client, msg) {
+		console.log('Updating msg ', msg.id_msg, 'of topic', msg.id_topic);
 		// get the Discord message object, then substitute the content in that message with the updated contents
 		let discordChannelId = await this.get_discordTopicId_fromForum(msg.id_topic);
 		const discordMessageId = await this.get_discordMsgId_fromForum(msg.id_msg);
@@ -819,7 +887,98 @@ class SMFConnection {
 				' because the post is a Discord original.');
 		}
 
-		this.update_syncTime(msg.id_msg);
+		this.update_FsyncTime();
+	}
+
+	async get_unsyncedDeletedForumPosts() {
+		return this.conn.query('SELECT * FROM discordmirror_unsynced_deletions;');
+	}
+
+	async clear_unsyncedDeletionsTable() {
+		const qry = await this.conn.query('TRUNCATE discordmirror_unsynced_deletions;');
+		if (qry.constructor.name !== 'OkPacket') {
+			throw new Error('Database table TRUNCATE failed.');
+		}
+		return qry;
+	}
+
+	async get_nMsgsInTopic(forum_topicId) {
+		return this.conn.query(`SELECT COUNT(*) AS count FROM itsa_messages WHERE id_topic = ${forum_topicId};`).then((value) => { return value.count; } );
+	}
+
+	async get_deletedMsgsOfSameTopic(forum_topicId) {
+		return this.conn.query(`SELECT * FROM discordmirror_unsynced_deletions WHERE forum_topicId = ${forum_topicId};`);
+	}
+
+	async syncF_deleteMsg(client, msg) {
+		console.log('Deleting msg', msg.forum_messageId, 'of topic', msg.forum_topicId);
+
+		let dMsgId = undefined;
+		try {
+			dMsgId = await this.get_discordMsgId_fromForum(msg.forum_messageId);
+		} catch (err) {
+			console.log("-> Mirror of message", msg.forum_messageId, "is not known or already deleted.");
+			return;
+		}
+
+		let dHome = await this.get_discordTopicId_fromForum(msg.forum_topicId);
+
+		if (dHome === dMsgId) {
+			// We are a thread starter. Find discord thread.
+			// Find the discord channel corresponding to the right board
+			dHome = await this.get_discordBoardId_fromForum(msg.forum_boardId);
+			const dMsg = await SMFConnection.get_discordMessage(client, dHome, dMsgId);
+
+			/*  incorrect, this is not what SMF does
+			// We are a topic starter. Does the topic have any other posts?
+			// If so, do not allow complete deletion.
+			const topicLength = await this.get_nMsgsInTopic(msg.forum_topicId);
+			if (topicLength > 0) {
+				// Do not allow complete deletion:
+				if (dMsg.author.id === clientId) {
+					// we can only update the message if Mirrorer is the original author.
+					dMsg.edit("*[Message deleted]*");
+				} else {
+					console.log(`Could not sync deletion of Discord message ${dHome}/${dMsgId}` +
+						' because the post is a Discord original.');
+				}
+
+
+			} else {
+				dMsg.delete();
+				this.delete_topicIdPair(msg.forum_topicId, dMsgId);
+
+			}*/
+			const deletedInSameThread = await this.get_deletedMsgsOfSameTopic(msg.forum_topicId);
+			for (const deletedMsg of deletedInSameThread) {
+				let deletedDMsgId = undefined;
+				try {
+					deletedDMsgId = await this.get_discordMsgId_fromForum(deletedMsg.forum_messageId);
+
+					// Deleting it in Discord is unecessary: it will already be gone
+					//const deletedDMsg = await SMFConnection.get_discordMessage(client, dHome, deletedDMsgId);
+					//deletedDMsg.delete();
+					this.delete_msgIdPair(deletedMsg.forum_messageId, deletedDMsgId);
+				} catch (err) {
+					console.log("-> Mirror of message ", deletedMsg.forum_messageId, "tbat should be in same topic is not known or already deleted.");
+				}
+
+			}
+
+			// Then delete me.
+			dMsg.delete();
+			this.delete_topicIdPair(msg.forum_topicId, dMsgId);
+
+		} else {
+			// Thread continuer
+			const dMsg = await SMFConnection.get_discordMessage(client, dHome, dMsgId);
+			dMsg.delete();
+		}
+
+		this.delete_msgIdPair(msg.forum_messageId, dMsgId);
+
+		this.update_FsyncTime();
+
 	}
 }
 exports.SMFConnection = SMFConnection;

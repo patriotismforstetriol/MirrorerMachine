@@ -5,13 +5,14 @@ class forumWatcher {
     forumCheckInterval = 3000;
     watcherId = undefined;
     client = undefined;
-    lastTick = new Date(Date.UTC(0, 0, 0, 0, 0, 0));
+    lastTick = 0;
 	watcherLock = false;
 
 	// Interval in ms
-	constructor(client, interval = 3000) {
+	constructor(client, lastTick = Math.floor(Date.now() / 1000), interval = 3000) {
 		this.forumCheckInterval = interval;
         this.client = client;
+		this.lastTick = lastTick;
 		if (this.watcherId === undefined) {
 			this.watcherId = setInterval(this.watcherFunction.bind(this), this.forumCheckInterval);
 			console.log('Forum watcher now running.');
@@ -38,19 +39,48 @@ class forumWatcher {
 			const db = await SMFConnection.SMFConnectionBuilder();
 
 			// Check if there have been any updates to database since last tick.
-			const latestUpdate = await db.get_latestMessageTime();
+			//const latestUpdate = await db.get_latestMessageTime().then((value) => { return Math.floor(value.getTime() / 1000); });
+			const latestUpdateClock = await db.get_latestMessageTime();
+			const latestUpdate = Math.floor(latestUpdateClock.getTime() / 1000);
+			console.log(latestUpdate, this.lastTick, latestUpdate > this.lastTick);
 			if (latestUpdate > this.lastTick) {
-				const newForumPosts = await db.get_newForumPosts_sinceTime(this.lastTick);
-				for (const newPost of newForumPosts) {
-					await db.syncF_newMsg(this.client, newPost); // have to await so thread starts exist before thread continuations
-				}
+				await Promise.allSettled([
+					this.spotNewMessages(db),
+					this.spotUpdatedMessages(db),
+					this.spotDeletedMessages(db)
+				]);
+				// Note: Promise.allSettled supresses error messages.
+				/*await this.spotNewMessages(db);
+				await this.spotUpdatedMessages(db);
+				await this.spotDeletedMessages(db);*/
+			}
+			this.lastTick = latestUpdate;
 
+			await db.end();
+			this.watcherLock = false;
+		} catch (err) {
+			console.log('Failed to connect to db due to ', err);
+			this.watcherLock = false;
+		}
+
+	}
+
+	async spotNewMessages(db) {
+		const newForumPosts = await db.get_newForumPosts_sinceTime(this.lastTick);
+		for (const newPost of newForumPosts) {
+			await db.syncF_newMsg(this.client, newPost); // have to await so thread starts exist before thread continuations
+		}
+	}
+
+	async spotUpdatedMessages(db) {
 				// How to do updated posts?
 				// Don't want to process text contents every time.
 				// 1. Have a time updated field in discordmirror_messages; only update if update time is sooner than that
 				// 2.
 				const updatedForumPosts = await db.get_updatedForumPosts_sinceTime(this.lastTick);
 				for (const updatedPost of updatedForumPosts) {
+
+
 					// add sync time check.
 					//updatedPost.modified_time
 
@@ -59,18 +89,14 @@ class forumWatcher {
 
 					db.syncF_update(this.client, updatedPost);
 				}
-			}
-			this.lastTick = latestUpdate;
-			// if yes, how many of those are forum-originating.
-			// Iterate through them and post them to database
+	}
 
-			await db.end();
-			this.watcherLock = false;
-		} catch (err) {
-			console.log('Failed to connect to db due to ', err);
-			this.watcherLock = false;
+	async spotDeletedMessages(db) {
+		const deletedForumPosts = await db.get_unsyncedDeletedForumPosts();
+		for (const deletedPost of deletedForumPosts) {
+			await db.syncF_deleteMsg(this.client, deletedPost);
 		}
-		console.log(this.watcherLock, this.lastTick);
+		db.clear_unsyncedDeletionsTable();
 	}
 };
 exports.forumWatcher = forumWatcher;
