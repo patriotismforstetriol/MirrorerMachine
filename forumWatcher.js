@@ -42,7 +42,6 @@ class forumWatcher {
 			//const latestUpdate = await db.get_latestMessageTime().then((value) => { return Math.floor(value.getTime() / 1000); });
 			const latestUpdateClock = await db.get_latestMessageTime();
 			const latestUpdate = Math.floor(latestUpdateClock.getTime() / 1000);
-			console.log(latestUpdate, this.lastTick, latestUpdate > this.lastTick);
 			if (latestUpdate > this.lastTick) {
 				await Promise.allSettled([
 					this.spotNewMessages(db),

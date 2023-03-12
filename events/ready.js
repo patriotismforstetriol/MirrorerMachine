@@ -1,5 +1,6 @@
 const { Events } = require('discord.js');
 const { forumWatcher } = require('../forumWatcher.js');
+const { discordWatcher } = require('../discordWatcher.js');
 const { SMFConnection } = require('../SMFlib.js');
 
 module.exports = {
@@ -10,9 +11,14 @@ module.exports = {
 
 		try {
 			const db = await SMFConnection.SMFConnectionBuilder();
-			const time = await db.get_FLastSyncTime();
-			console.log("Last sync time: ", time, "vs now: ", Math.floor(Date.now() / 1000));
-			new forumWatcher(client, lastTick=time);
+			const fTime = await db.get_FLastSyncTime();
+			console.log("Last forum sync time: ", fTime, "vs now: ", Math.floor(Date.now() / 1000));
+			new forumWatcher(client, lastTick=fTime);
+
+			const dTime = await db.get_DLastSyncTime();
+			console.log("Last Discord sync time: ", dTime, "vs now: ", Math.floor(Date.now() / 1000));
+			new discordWatcher(client, lastTick=dTime);
+
 			db.end();
 			return;
 
@@ -21,6 +27,7 @@ module.exports = {
 		}
 
 		new forumWatcher(client);
+		new discordWatcher(client);
 	},
 };
 

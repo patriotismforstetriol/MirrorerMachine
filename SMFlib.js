@@ -280,11 +280,18 @@ class SMFConnection {
 	}
 
 	async sync_newTopic(discordMessageObject, topicName = undefined) {
+		console.log(`D->F: Creating msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}`);
 		// Get board ID of board that corresponds to this channel
 		const board = await this.get_forumBoardId_fromDiscord(discordMessageObject.channelId);
 
 		// Get Mirrorer's name for the person who posted this
-		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		let usersName;
+		try {
+			usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		} catch (err) {
+			console.log(`Failed to create msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}:`, err);
+			return;
+		}
 		const msgContent = getForumReadyContent(discordMessageObject, usersName);
 		const msgTitle = topicName === undefined ? getSubjectLine(discordMessageObject) : topicName;
 
@@ -300,6 +307,8 @@ class SMFConnection {
 
 		// Add the new message and post to the database (using known board, topic, and msg IDs)
 		await this.put_newMsg_setId(msgId, topicId, board, usersName, msgTitle, msgContent);
+		this.put_topicIdPair(topicId, discordMessageObject.id);
+		this.put_msgIdPair(msgId, discordMessageObject.id);
 
 		// End transaction if we got this far.
 		await this.commit();
@@ -308,13 +317,19 @@ class SMFConnection {
 
 		// Track them in our discord link databases too
 		// Note: thread id is same as founder message id
-		this.put_topicIdPair(topicId, discordMessageObject.id);
-		this.put_msgIdPair(msgId, discordMessageObject.id);
+
 	}
 
 	async sync_newMsgInTopic(discordMessageObject) {
+		console.log(`D->F: Creating msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}`);
 		// Get Mirrorer's name for the person who posted this
-		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		let usersName;
+		try {
+			usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		} catch (err) {
+			console.log(`Failed to create msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}:`, err);
+			return;
+		}
 		const msgContent = getForumReadyContent(discordMessageObject, usersName);
 
 		// Get forum id of this thread/topic
@@ -333,28 +348,42 @@ class SMFConnection {
 		// Update the latest message id in the topic row
 		await this.update_forumTopic_wLatestMsg(topicId, msgId);
 
+		// Track msg in our discord link database
+		await this.put_msgIdPair(msgId, discordMessageObject.id);
+
 		await this.commit();
 
 		await this.update_boardStats(boardId);
-
-		// Track msg in our discord link database
-		await this.put_msgIdPair(msgId, discordMessageObject.id);
 	}
 
 	async sync_updateMsg(discordMessageObject) {
+		console.log(`D->F: Updating msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObjectd}`);
 		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
-		const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		let usersName;
+		try {
+			usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+		} catch (err) {
+			console.log(`Failed to update msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}:`, err);
+			return;
+		}
 		const newBody = getForumReadyContent(discordMessageObject, usersName);
 
 		this.update_forumMsg(msgId, usersName, newBody);
 	}
 
 	async sync_deleteMsg(discordMessageObject) {
+		console.log(`D->F: Deleting msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObjectd}`);
 		// Is it the first message in a topic? Then it can't be deleted
 		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
 		const isTopic = await this.check_discordTopicMembership(discordMessageObject.id);
 		if (isTopic) {
-			const usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+			let usersName;
+			try {
+				usersName = await this.get_discordMemberName(discordMessageObject.author.id);
+			} catch (err) {
+				console.log(`Failed to delete msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}:`, err);
+				return;
+			}
 			const newBody = `[size=1][i][Message from Discord user ${usersName}]\n\n[Message deleted][/i][/size]`;
 			this.update_forumMsg(msgId, usersName, newBody);
 
@@ -694,27 +723,19 @@ class SMFConnection {
 	}
 
 	async put_newMsg(forumTopicId, forumBoardId, author, title, content) {
-		const qry = await this.conn.query('INSERT INTO itsa_messages '
+		return this.conn.query('INSERT INTO itsa_messages '
             + '(id_topic, id_board, discord_original, poster_time, id_member, subject, poster_name, poster_email, body) '
             + `VALUES (${forumTopicId}, ${forumBoardId}, TRUE, UNIX_TIMESTAMP(), `
             + `${myForumId}, ` + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
 			+ this.conn.escape(myEmail) + ', ' + this.conn.escape(content) + '); ');
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database new message INSERT failed.');
-		}
-		return qry;
 	}
 
 	async put_newMsg_setId(msgId, forumTopicId, forumBoardId, author, title, content) {
-		const qry = await this.conn.query('INSERT INTO itsa_messages '
+		return this.conn.query('INSERT INTO itsa_messages '
             + '(id_msg, id_topic, id_board, discord_original, poster_time, id_member, subject, poster_name, poster_email, body) '
             + `VALUES (${msgId}, ${forumTopicId}, ${forumBoardId}, TRUE, UNIX_TIMESTAMP(), `
             + `${myForumId}, ` + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
 			+ this.conn.escape(myEmail) + ', ' + this.conn.escape(content) + '); ');
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database new message INSERT failed.');
-		}
-		return qry;
 	}
 
 	async update_forumMsg(msgId, updaterName, content) {
@@ -929,26 +950,6 @@ class SMFConnection {
 			dHome = await this.get_discordBoardId_fromForum(msg.forum_boardId);
 			const dMsg = await SMFConnection.get_discordMessage(client, dHome, dMsgId);
 
-			/*  incorrect, this is not what SMF does
-			// We are a topic starter. Does the topic have any other posts?
-			// If so, do not allow complete deletion.
-			const topicLength = await this.get_nMsgsInTopic(msg.forum_topicId);
-			if (topicLength > 0) {
-				// Do not allow complete deletion:
-				if (dMsg.author.id === clientId) {
-					// we can only update the message if Mirrorer is the original author.
-					dMsg.edit("*[Message deleted]*");
-				} else {
-					console.log(`Could not sync deletion of Discord message ${dHome}/${dMsgId}` +
-						' because the post is a Discord original.');
-				}
-
-
-			} else {
-				dMsg.delete();
-				this.delete_topicIdPair(msg.forum_topicId, dMsgId);
-
-			}*/
 			const deletedInSameThread = await this.get_deletedMsgsOfSameTopic(msg.forum_topicId);
 			for (const deletedMsg of deletedInSameThread) {
 				let deletedDMsgId = undefined;
@@ -956,8 +957,6 @@ class SMFConnection {
 					deletedDMsgId = await this.get_discordMsgId_fromForum(deletedMsg.forum_messageId);
 
 					// Deleting it in Discord is unecessary: it will already be gone
-					//const deletedDMsg = await SMFConnection.get_discordMessage(client, dHome, deletedDMsgId);
-					//deletedDMsg.delete();
 					this.delete_msgIdPair(deletedMsg.forum_messageId, deletedDMsgId);
 				} catch (err) {
 					console.log("-> Mirror of message ", deletedMsg.forum_messageId, "tbat should be in same topic is not known or already deleted.");
@@ -979,6 +978,74 @@ class SMFConnection {
 
 		this.update_FsyncTime();
 
+	}
+
+	async get_allDChannelIds_fromDMirr() {
+		return this.conn.query('SELECT discord_boardId FROM discordmirror_boards;');
+	}
+
+	async get_dMirrBoards() {
+		return this.conn.query('SELECT * FROM discordmirror_boards;');
+	}
+
+	async get_allDTopicIds_fromDMirr() {
+		return this.conn.query('SELECT discord_topicId FROM discordmirror_topics;');
+	}
+
+	async get_dMirrTopics() {
+		return this.conn.query('SELECT * FROM discordmirror_topics;');
+	}
+
+	async get_msgId_oflatestDOriginal_inFBoard(fBoardId) {
+		return this.conn.query('SELECT id_msg FROM itsa_messages WHERE '
+		+ 'discord_original IS TRUE AND id_board = ' + this.conn.escape(fBoardId)
+		+ ' ORDER BY poster_time DESC LIMIT 1;');
+	}
+
+	async get_msgId_oflatestDOriginal_inFTopic(fTopicId) {
+		return this.conn.query('SELECT id_msg FROM itsa_messages WHERE '
+		+ 'discord_original IS TRUE AND id_topic = ' + this.conn.escape(fTopicId)
+		+ ' ORDER BY poster_time DESC LIMIT 1;');
+	}
+
+	async get_dMsgId_oflatestDOriginal_inFBoard(fBoardId) {
+		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
+		+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
+		+ 'discord_original IS TRUE AND id_board = ' + this.conn.escape(fBoardId)
+		+ ' ORDER BY poster_time DESC LIMIT 1);');
+	}
+
+	async get_dMsgId_oflatestDOriginal_inFTopic(fTopicId) {
+		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
+		+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
+		+ 'discord_original IS TRUE AND id_topic = ' + this.conn.escape(fTopicId)
+		+ ' ORDER BY poster_time DESC LIMIT 1);');
+		/*return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
+		+ 'WHERE forum_messageId = (SELECT id_last_msg FROM itsa_topics WHERE '
+		+ 'id_topic = ' + this.conn.escape(fTopicId)
+		+ '  LIMIT 1);');*/
+	}
+
+	async get_dMsgId_oflatestDOriginal_inDChannel(dChannelId) {
+		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
+		+ 'WHERE forum_messageId IN (SELECT id_msg FROM itsa_messages WHERE '
+		+ 'discord_original IS TRUE AND id_board IN (SELECT forum_boardId FROM '
+		+ 'discordmirror_boards WHERE discord_boardId = ' + this.conn.escape(dChannelId)
+		+ ' LIMIT 1) ORDER BY poster_time DESC LIMIT 1);');
+	}
+
+	async get_dMsgId_oflatestDOriginal_inDThread(dThreadId) {
+		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
+		+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
+		+ 'discord_original IS TRUE AND id_topic = (SELECT forum_topicId FROM '
+		+ 'discordmirror_topics WHERE discord_topicId = ' + this.conn.escape(dThreadId)
+		+ ' LIMIT 1) ORDER BY poster_time DESC LIMIT 1);');
+	}
+
+	async get_discordMsgId_ofLatestDMsg() {
+		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
+			+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
+			+ 'discord_original IS TRUE ORDER BY poster_time DESC LIMIT 1);');
 	}
 }
 exports.SMFConnection = SMFConnection;
