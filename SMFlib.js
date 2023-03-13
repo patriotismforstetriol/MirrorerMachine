@@ -357,7 +357,7 @@ class SMFConnection {
 	}
 
 	async sync_updateMsg(discordMessageObject) {
-		console.log(`D->F: Updating msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObjectd}`);
+		console.log(`D->F: Updating msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}`);
 		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
 		let usersName;
 		try {
@@ -372,7 +372,7 @@ class SMFConnection {
 	}
 
 	async sync_deleteMsg(discordMessageObject) {
-		console.log(`D->F: Deleting msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObjectd}`);
+		console.log(`D->F: Deleting msg https://discord.com/channels/${discordMessageObject.guildId}/${discordMessageObject.channelId}/${discordMessageObject.id}`);
 		// Is it the first message in a topic? Then it can't be deleted
 		const msgId = await this.get_forumMsgId_fromDiscord(discordMessageObject.id);
 		const isTopic = await this.check_discordTopicMembership(discordMessageObject.id);
@@ -633,15 +633,19 @@ class SMFConnection {
 
 	async update_forumTopic_deleteLatestMsg(forumTopicId, latestMsgId) {
 		// latestMsgId is going to be deleted.
-		const predecessorMsg = await this.get_precedingMsg(latestMsgId);
+		try {
+			const predecessorMsg = await this.get_precedingMsg(latestMsgId);
 
-		const qry = await this.conn.query('UPDATE itsa_topics '
-			+ `SET id_last_msg = ${predecessorMsg}, num_replies = num_replies - 1 `
-			+ `WHERE id_topic = ${forumTopicId};`);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database topic UPDATE failed.');
+			const qry = await this.conn.query('UPDATE itsa_topics '
+				+ `SET id_last_msg = ${predecessorMsg}, num_replies = num_replies - 1 `
+				+ `WHERE id_topic = ${forumTopicId};`);
+			if (qry.constructor.name !== 'OkPacket') {
+				throw new Error('Database topic UPDATE failed.');
+			}
+			return qry;
+		} catch (err) {
+			return null;
 		}
-		return qry;
 	}
 
 	/* Functions on: discordmirror_messages */
@@ -720,6 +724,16 @@ class SMFConnection {
 			throw new Error('Database message link DELETE failed.');
 		}
 		return qry;
+	}
+
+	async delete_forumTopic(forumTopicId) {
+		return this.conn.query('DELETE FROM itsa_topics '
+            + 'WHERE id_topic = ' + this.conn.escape(forumTopicId) + '; ');
+	}
+
+	async delete_messagesInForumTopic(forumTopicId) {
+		return this.conn.query('DELETE FROM itsa_messages '
+            + 'WHERE id_topic = ' + this.conn.escape(forumTopicId) + '; ');
 	}
 
 	async put_newMsg(forumTopicId, forumBoardId, author, title, content) {
@@ -849,20 +863,6 @@ class SMFConnection {
 		}
 
 		this.update_FsyncTime(msg.id_msg);
-	}
-
-	static async get_discordMessage(client, channelId, messageId) {
-		const channel = await client.channels.fetch(channelId);
-		if (channel === undefined || channel.constructor.name === 'Collection') {
-			throw new Error(`Could not find specific channel id ${channelId}`);
-		}
-
-		const targetMsg = await channel.messages.fetch(messageId);
-		if (targetMsg === undefined || targetMsg.constructor.name === 'Collection') {
-			throw new Error(`Could not find specific message id ${messageId}`);
-		} else {
-			return targetMsg;
-		}
 	}
 
 	async update_FsyncTime() {
@@ -996,6 +996,19 @@ class SMFConnection {
 		return this.conn.query('SELECT * FROM discordmirror_topics;');
 	}
 
+	async get_dMirrMessages() {
+		return this.conn.query('SELECT * FROM discordmirror_messages;');
+	}
+
+	async get_forumMsg_fromId(msgId) {
+		return this.conn.query('SELECT * FROM itsa_messages WHERE id_msg = ' + this.conn.escape(msgId) + ';');
+	}
+
+	async get_allMsgIds_ofDOriginals() {
+		return this.conn.query('SELECT id_msg, id_topic, id_board FROM itsa_messages '
+			+ 'WHERE discord_original IS TRUE;');
+	}
+
 	async get_msgId_oflatestDOriginal_inFBoard(fBoardId) {
 		return this.conn.query('SELECT id_msg FROM itsa_messages WHERE '
 		+ 'discord_original IS TRUE AND id_board = ' + this.conn.escape(fBoardId)
@@ -1008,44 +1021,62 @@ class SMFConnection {
 		+ ' ORDER BY poster_time DESC LIMIT 1;');
 	}
 
-	async get_dMsgId_oflatestDOriginal_inFBoard(fBoardId) {
-		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
-		+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
-		+ 'discord_original IS TRUE AND id_board = ' + this.conn.escape(fBoardId)
-		+ ' ORDER BY poster_time DESC LIMIT 1);');
-	}
-
-	async get_dMsgId_oflatestDOriginal_inFTopic(fTopicId) {
-		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
-		+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
-		+ 'discord_original IS TRUE AND id_topic = ' + this.conn.escape(fTopicId)
-		+ ' ORDER BY poster_time DESC LIMIT 1);');
-		/*return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
-		+ 'WHERE forum_messageId = (SELECT id_last_msg FROM itsa_topics WHERE '
-		+ 'id_topic = ' + this.conn.escape(fTopicId)
-		+ '  LIMIT 1);');*/
-	}
-
-	async get_dMsgId_oflatestDOriginal_inDChannel(dChannelId) {
-		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
-		+ 'WHERE forum_messageId IN (SELECT id_msg FROM itsa_messages WHERE '
-		+ 'discord_original IS TRUE AND id_board IN (SELECT forum_boardId FROM '
-		+ 'discordmirror_boards WHERE discord_boardId = ' + this.conn.escape(dChannelId)
-		+ ' LIMIT 1) ORDER BY poster_time DESC LIMIT 1);');
-	}
-
-	async get_dMsgId_oflatestDOriginal_inDThread(dThreadId) {
-		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
-		+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
-		+ 'discord_original IS TRUE AND id_topic = (SELECT forum_topicId FROM '
-		+ 'discordmirror_topics WHERE discord_topicId = ' + this.conn.escape(dThreadId)
-		+ ' LIMIT 1) ORDER BY poster_time DESC LIMIT 1);');
-	}
-
 	async get_discordMsgId_ofLatestDMsg() {
 		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
 			+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
 			+ 'discord_original IS TRUE ORDER BY poster_time DESC LIMIT 1);');
 	}
+
+	static async get_discordMessage(client, channelId, messageId) {
+		try {
+			const channel = await client.channels.fetch(channelId);
+			if (channel === undefined || channel.constructor.name === 'Collection') {
+				console.log(`Could not find specific channel id ${channelId}`);
+				return undefined;
+			}
+
+			const targetMsg = await channel.messages.fetch(messageId);
+			if (targetMsg === undefined || targetMsg.constructor.name === 'Collection') {
+				console.log(`Could not find specific message id ${messageId}`);
+				return undefined;
+			} else {
+				return targetMsg;
+			}
+		} catch (err) {
+			return undefined;
+		}
+	}
+
+	async get_firstMsgId_inTopic(topicId) {
+		return this.conn.query('SELECT id_first_msg FROM itsa_topics WHERE id_topic = ' + this.conn.escape(topicId) + ';');
+	}
+
+	async get_discordMessage_fromFIds(client, forum_messageId, forum_topicId, forum_boardId) {
+		const discord_messageId = await this.get_discordMsgId_fromForum(forum_messageId);
+
+		const topicStarter = await this.get_firstMsgId_inTopic(forum_topicId);
+		if (topicStarter.length === 0) {
+			return undefined;
+			//throw new Error(`Could not get Discord message: forum topic ${forum_topicId} seems not to exist.`);
+		}
+
+		let discord_channelId = undefined;
+		let isTopicStarter = false;
+		if (topicStarter[0].id_first_msg === forum_messageId) {
+			discord_channelId = await this.get_discordBoardId_fromForum(forum_boardId);
+			isTopicStarter = true;
+		} else {
+			discord_channelId = await this.get_discordTopicId_fromForum(forum_topicId);
+		}
+
+		const discordMsg = await SMFConnection.get_discordMessage(client, discord_channelId, discord_messageId);
+		const obj = {"discordMsg": discordMsg,
+			"discordMsgId": discord_messageId,
+			"discordChannelId": discord_channelId,
+			"isTopicStarter": isTopicStarter
+		};
+		return obj;
+	}
 }
+
 exports.SMFConnection = SMFConnection;
