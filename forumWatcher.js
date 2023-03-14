@@ -9,12 +9,21 @@ class forumWatcher {
 	watcherLock = false;
 
 	// Interval in ms
-	constructor(client, lastTick = Math.floor(Date.now() / 1000), interval = 3000) {
+	constructor(interval = 3000) {
 		this.forumCheckInterval = interval;
-        this.client = client;
+		this.lastTick = Math.floor(Date.now() / 1000);
+		this.watcherLock = true; // start inactivated.
+	}
+
+	setLastTick(lastTick = Math.floor(Date.now() / 1000)) {
 		this.lastTick = lastTick;
+	}
+
+	startWatching(client) {
+		this.client = client;
 		if (this.watcherId === undefined) {
 			this.watcherId = setInterval(this.watcherFunction.bind(this), this.forumCheckInterval);
+			this.watcherLock = false;
 			console.log('Forum watcher now running.');
 		} else {
 			console.log('Forum watcher already running.');

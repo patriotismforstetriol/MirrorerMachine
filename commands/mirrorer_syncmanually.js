@@ -3,11 +3,11 @@ const { SMFConnection, getSubjectLine } = require('../SMFlib.js');
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('updatedb')
-		.setDescription('Tell MirrorerMachine to force update its database entry for a particular message.')
+		.setName('mirrorer_syncmanually')
+		.setDescription('Force update MirrorerMachine\'s database entry for a particular Discord message.')
 		.setDefaultMemberPermissions(PermissionFlagsBits.ViewAuditLog)
 		.addStringOption(option => option.setName('messagelink')
-			.setDescription('discord.com link of the Discord message in question.')
+			.setDescription('discord.com link(s) of the Discord message(s) in question.')
 			.setRequired(true)),
 	async execute(interaction) {
 		// Might be better to try with input being the message link, to deal with threads well eg:

@@ -9,11 +9,13 @@ class discordWatcher {
     client = undefined;
 
 	// Interval in ms
-	constructor(client, lastTick = Math.floor(Date.now() / 1000)) {
-        this.client = client;
+	constructor() {
+    }
 
+    syncEverythingSince(client, lastTick = Math.floor(Date.now() / 1000)) {
+        this.client = client;
         // Check for stuff that happened since last time
-        this.spotNewMessages();
+        this.spotNewMessages(); // @@
         this.spotDeletedAndUpdatedMessages(lastTick);
 	}
 

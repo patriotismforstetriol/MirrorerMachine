@@ -6,6 +6,8 @@ const { SMFConnection } = require('../SMFlib.js');
 module.exports = {
 	name: Events.ClientReady,
 	once: true,
+	myForumWatcher: new forumWatcher(),
+	myDiscordWatcher: new discordWatcher(),
 	async execute(client) {
 		console.log(`Ready! Logged in as ${client.user.tag}`);
 
@@ -13,11 +15,12 @@ module.exports = {
 			const db = await SMFConnection.SMFConnectionBuilder();
 			const fTime = await db.get_FLastSyncTime();
 			console.log("Last forum sync time: ", fTime, "vs now: ", Math.floor(Date.now() / 1000));
-			new forumWatcher(client, lastTick=fTime);
+			this.myForumWatcher.setLastTick(fTime);
+			this.myForumWatcher.startWatching(client);
 
 			const dTime = await db.get_DLastSyncTime();
 			console.log("Last Discord sync time: ", dTime, "vs now: ", Math.floor(Date.now() / 1000));
-			new discordWatcher(client, lastTick=dTime);
+			this.myDiscordWatcher.syncEverythingSince(client, dTime);
 
 			db.end();
 			return;
@@ -26,8 +29,8 @@ module.exports = {
 			console.log('Failed to connect to db due to ', err);
 		}
 
-		new forumWatcher(client);
-		new discordWatcher(client);
+		this.myForumWatcher.startWatching(client);
+		this.myDiscordWatcher.syncEverythingSince(client);
 	},
 };
 

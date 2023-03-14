@@ -2,7 +2,7 @@ const { SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, Act
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('nameme')
+		.setName('mirrorer_nameme')
 		.setDescription('Set the name that MirrorerMachine will list as the author of your messages on the web forum.'),
 	async execute(interaction) {
 		// interaction.user is the object representing the User who ran the command
