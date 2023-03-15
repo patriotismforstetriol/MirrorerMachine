@@ -229,15 +229,19 @@ class SMFConnection {
 	}
 
 	async end() {
-		await this.conn.end();
+		this.conn.end();
 	}
 
 	async beginTransaction() {
-		await this.conn.beginTransaction();
+		this.conn.beginTransaction();
 	}
 
 	async commit() {
-		await this.conn.commit();
+		this.conn.commit();
+	}
+
+	async query(q) {
+		return this.conn.query(q);
 	}
 
 	/* Higher level methods */
