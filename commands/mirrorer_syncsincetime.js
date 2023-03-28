@@ -7,7 +7,7 @@ module.exports = {
 		.setDescription('Force sync all Discord and forum messages more recent than the given time.')
 		.setDefaultMemberPermissions(PermissionFlagsBits.ViewAuditLog)
 		.addStringOption(option => option.setName('timestamp')
-			.setDescription('Unix timestamp')
+			.setDescription('Date & Timestamp')
 			.setRequired(true)),
 	async execute(interaction) {
 		console.log(myForumWatcher);

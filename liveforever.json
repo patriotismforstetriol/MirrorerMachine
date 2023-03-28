@@ -1,0 +1,11 @@
+{
+    // Change out 'me' in filepaths for the appropriate name
+    "uid": "MirrorerMachine",
+    "append": true,
+    "watch": true,
+    "script": "index.js",
+    "sourceDir": "/home/me/MirrorerMachine",
+    "logFile": "/home/me/logs/forever.log",
+    "outFile": "/home/me/logs/out.log",
+    "errFile": "/home/me/logs/error.log"
+}

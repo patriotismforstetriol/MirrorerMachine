@@ -1,0 +1,16 @@
+{
+	"token": "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "myDiscordId": "100000000000000000",
+    "guildId": "100000000000000000",
+    "guildRegisteredRole": "100000000000000000",
+    "myDiscordAdmin": "100000000000000000",
+    "myEmail": "email@example.com",
+    "dbUsername": "dbuser",
+    "dbHostname": "example.com",
+    "dbPw": "Password1",
+    "dbName": "forums",
+    "dbTablePrefix": "smf_",
+    "forumHostname": "https://example.com/forums/",
+    "myForumId": "2",
+    "forumCheckIntervals": 3000
+}
