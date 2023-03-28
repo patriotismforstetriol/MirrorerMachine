@@ -14,12 +14,12 @@ module.exports = {
 		try {
 			const db = await SMFConnection.SMFConnectionBuilder();
 			const fTime = await db.get_FLastSyncTime();
-			console.log("Last forum sync time: ", fTime, "vs now: ", Math.floor(Date.now() / 1000));
+			console.log('Last forum sync time: ', fTime, 'vs now: ', Math.floor(Date.now() / 1000));
 			this.myForumWatcher.setLastTick(fTime);
 			this.myForumWatcher.startWatching(client);
 
 			const dTime = await db.get_DLastSyncTime();
-			console.log("Last Discord sync time: ", dTime, "vs now: ", Math.floor(Date.now() / 1000));
+			console.log('Last Discord sync time: ', dTime, 'vs now: ', Math.floor(Date.now() / 1000));
 			this.myDiscordWatcher.syncEverythingSince(client, dTime);
 
 			db.end();

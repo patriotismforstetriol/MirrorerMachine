@@ -1,7 +1,7 @@
 // Library functions for syncing between Simple Machines Forum and Discord server
 const { Message, Attachment } = require('discord.js');
 const mariadb = require('mariadb');
-const { dbUsername, dbHostname, dbPw, clientId, myForumId, myEmail } = require('./config.json');
+const { dbUsername, dbHostname, dbPw, dbName, dbTablePrefix, myDiscordId, myForumId, myEmail, myDiscordAdmin, forumHostname } = require('./config.json');
 
 
 /* GENERAL CATEGORY */
@@ -12,23 +12,15 @@ function getSubjectLine(message) {
 	if (!(message instanceof Message)) return undefined;
 
 	let subjectline;
-	if (message.content.length <= 81) {
-		// if message length <= 81: start a thread with that message as both title and content
-		subjectline = message.content;
+	const firstLine = message.content.split(/\n(.*)/s);
 
+	if (firstLine.length === 0 || firstLine[0] === undefined) return;
+
+	if (firstLine[0].length <= 81) {
+		subjectline = firstLine[0];
 	} else {
-		// if message is longer than that but the first line is in the right length:
-		// first line is the title
-		const firstLine = message.content.split(/\n(.*)/s);
-
-		if (firstLine.length === 0 || firstLine[0] === undefined) return;
-
-		if (firstLine[0].length <= 81) {
-			subjectline = firstLine[0];
-		} else {
-			// Otherwise cropped portion of post text is the title
-			subjectline = `${(firstLine[0]).substring(0, 77)}...`;
-		}
+		// Otherwise cropped portion of post text is the title
+		subjectline = `${(firstLine[0]).substring(0, 77)}...`;
 	}
 	return subjectline;
 }
@@ -165,7 +157,7 @@ function getDiscordReadyContent(messageContent, author) {
 	output = output.replace(italicRegex, '*$1*');
 	output = output.replace(strikethroughRegex, '~~$1~~');
 	output = output.replace(lineCodeRegex, '`$1`');
-	output = output.replace(memberRegex, `@$2 (${dbHostname}/forums/index.php?action=profile;u=$1)`);
+	output = output.replace(memberRegex, `@$2 (${forumHostname}index.php?action=profile;u=$1)`);
 
 	return `*[Message from forum user ${author}]*\n\n${output}`;
 }
@@ -220,7 +212,7 @@ class SMFConnection {
      */
 	static async SMFConnectionBuilder() {
 		const conn = await pool.getConnection();
-		await conn.query('USE forums;');
+		await conn.query('USE ' + dbName + ';');
 		return new SMFConnection(conn);
 	}
 
@@ -242,6 +234,10 @@ class SMFConnection {
 
 	async query(q) {
 		return this.conn.query(q);
+	}
+
+	async escape(input) {
+		return await this.conn.escape(input);
 	}
 
 	/* Higher level methods */
@@ -343,7 +339,7 @@ class SMFConnection {
 		const boardId = await this.get_forumBoardId_fromTopic(topicId);
 		const msgTitle = await this.get_topicTitle_fromForumTopic(topicId);
 
-		await this.beginTransaction();
+		await this.conn.beginTransaction();
 		const msgId = await this.get_nextUnusedMsgId();
 
 		// Add the new message and post to the database (using known board, topic, and msg IDs)
@@ -393,7 +389,7 @@ class SMFConnection {
 
 			// throw new Error('First messages in topics cannot be deleted.');
 		} else {
-			// It is a topic body message: delete it from discordmirror_messages and itsa_messages
+			// It is a topic body message: delete it from discordmirror_messages and ' + dbTablePrefix + '_messages
 
 			// But first, if we need to update the latest message in topic field, do that.
 			try {
@@ -414,6 +410,38 @@ class SMFConnection {
 		await this.update_boardStats(boardId);
 	}
 
+	async sync_newName(proposedName, discordUserId) {
+		// Check the user has not already set their name. For now name changes will be manual.
+		const existingName = await this.conn.query('SELECT discord_member_name FROM discordmirror_members '
+		+ 'WHERE discordid_member LIKE ' + this.conn.escape(discordUserId) + ';');
+		if (existingName[0] !== undefined) {
+			return `Your name is already set as "${existingName[0]['discord_member_name']}"! `
+				+ 'I am not currently permitted to change names. Contact my administrator '
+				+ `<@${myDiscordAdmin}> to request a manual name change.`;
+		} else {
+
+			// check proposed name is unique among discord mirror users
+			const rows = await this.conn.query('SELECT discordid_member FROM discordmirror_members '
+				+ 'WHERE discord_member_name LIKE ' + await this.conn.escape(proposedName) + ';');
+
+			if (rows[0] === undefined) {
+				// Add name and user to mirror database
+				const insert = await this.conn.query('INSERT INTO discordmirror_members '
+					+ '(discordid_member, discord_member_name) VALUES ('
+					+ await this.conn.escape(discordUserId) + ', '
+					+ await this.conn.escape(proposedName) + ');');
+				if (insert.constructor.name !== 'OkPacket') {
+					throw new Error('Database INSERT failed.');
+				}
+				return `"${proposedName}" has been set as your name. You now have access to the entire Discord server.`;
+			} else {
+				// Prompt user to try again with a different name
+				return `The name "${proposedName}" is not available. Please try the \\nameme command again with a different name.`;
+			}
+
+		}
+	}
+
 	/* Functions on: discordmirror_members */
 	async create_syncMemberTable() {
 		return this.conn.query('CREATE TABLE discordmirror_members('
@@ -426,44 +454,47 @@ class SMFConnection {
 		return this.conn.query('CREATE TABLE discordmirror_unsynced_deletions('
             + 'forum_messageId int(10) UNSIGNED PRIMARY KEY, '
             + 'forum_topicId MEDIUMINT(8) UNSIGNED NOT NULL, '
-			+ 'forum_boardId SMALLINT(5) UNSIGNED NOT NULL);'
-			).then((value) => {
-				if (value.constructor.name !== 'OkPacket') {
-					return value;
-				} else {
-					return this.conn.query('CREATE TRIGGER FMsgDelete AFTER DELETE ON itsa_messages '
+			+ 'forum_boardId SMALLINT(5) UNSIGNED NOT NULL);',
+		).then((value) => {
+			if (value.constructor.name !== 'OkPacket') {
+				return value;
+			} else {
+				return this.conn.query('CREATE TRIGGER FMsgDelete AFTER DELETE ON ' + dbTablePrefix + '_messages '
 					+ 'FOR EACH ROW INSERT INTO discordmirror_unsynced_deletions(forum_messageId, forum_topicId, forum_boardId) '
 					+ 'VALUES (old.id_msg, old.id_topic, old.id_board);');
-				}
-			}).then((value) => {
-				if (value.constructor.name !== 'OkPacket') {
-					return value;
-				} else {
-					return this.conn.query(`GRANT DROP ON TABLE discordmirror_unsynced_deletions TO '${dbUsername}'@'%';`); //@@ safety of this line
-				}
-			});
+			}
+		}).then((value) => {
+			if (value.constructor.name !== 'OkPacket') {
+				return value;
+			} else {
+				return this.conn.query('GRANT DROP ON TABLE discordmirror_unsynced_deletions TO '
+					+ this.conn.escape(dbUsername) + '@\'%\';');
+			}
+		});
 	}
 
 	async create_lastSyncsTable() {
 		return this.conn.query('CREATE TABLE discordmirror_lastsyncs('
 			+ 'forum BOOLEAN PRIMARY KEY, '
-			+ 'sync_time int(10) UNSIGNED DEFAULT 0);'
-			).then((value) => {
-				if (value.constructor.name !== 'OkPacket') {
-					return value;
-				} else {
-					return this.conn.query('INSERT INTO discordmirror_lastsyncs(forum, sync_time) '
+			+ 'sync_time int(10) UNSIGNED DEFAULT 0);',
+		).then((value) => {
+			if (value.constructor.name !== 'OkPacket') {
+				return value;
+			} else {
+				return this.conn.query('INSERT INTO discordmirror_lastsyncs(forum, sync_time) '
 						+ 'VALUES (TRUE,0), (FALSE,0);');
-				}
-			});
+			}
+		});
 	}
 
 	async get_discordMemberName(discordMemberId) {
-		const usersName_qry = await this.conn.query(`SELECT discord_member_name FROM discordmirror_members WHERE discordid_member LIKE ${discordMemberId};`);
-		if (usersName_qry.length === 0) {
-			throw new Error(`Could not find a name for user ${discordMemberId}.`);
-		}
-		return usersName_qry[0].discord_member_name;
+		return this.conn.query('SELECT discord_member_name FROM discordmirror_members '
+			+ 'WHERE discordid_member LIKE ' + this.conn.escape(discordMemberId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error(`Could not find a name for user ${discordMemberId}.`);
+			}
+			return qry[0].discord_member_name;
+		});
 	}
 
 	/* Functions on: discordmirror_boards */
@@ -474,23 +505,27 @@ class SMFConnection {
 	}
 
 	async check_discordBoardMembership(discordChannelId) {
-		const qry = await this.conn.query('SELECT EXISTS '
-			+ `( SELECT 1 FROM discordmirror_boards WHERE discord_boardId LIKE '${discordChannelId}')`
-			+ 'AS isMember;');
-		// length == 0 should be impossible with this query
-		/* if (qry.length === 0) {
-			throw new Error(`Could not find board corresponding to Discord channel ${discordChannelId} in \`discordmirror_boards\``);
-		}*/
-		// returns 0 for no, 1 for yes
-		return qry[0].isMember;
+		return this.conn.query('SELECT EXISTS '
+			+ '( SELECT 1 FROM discordmirror_boards WHERE discord_boardId LIKE '
+			+ this.conn.escape(discordChannelId)
+			+ ') AS isMember;').then((qry) => {
+			// length == 0 should be impossible with this query
+			/* if (qry.length === 0) {
+					throw new Error(`Could not find board corresponding to Discord channel ${discordChannelId} in \`discordmirror_boards\``);
+				}*/
+			// returns 0 for no, 1 for yes
+			return qry[0].isMember;
+		});
 	}
 
 	async get_forumBoardId_fromDiscord(discordBoardId) {
-		const qry = await this.conn.query(`SELECT forum_boardId FROM discordmirror_boards WHERE discord_boardId LIKE '${discordBoardId}'`);
-		if (qry.length === 0) {
-			throw new Error(`Could not find board corresponding to Discord channel ${discordBoardId} in \`discordmirror_boards\``);
-		}
-		return qry[0].forum_boardId;
+		return this.conn.query('SELECT forum_boardId FROM discordmirror_boards WHERE '
+			+ 'discord_boardId LIKE ' + this.conn.escape(discordBoardId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error(`Could not find board corresponding to Discord channel ${discordBoardId} in \`discordmirror_boards\``);
+			}
+			return qry[0].forum_boardId;
+		});
 	}
 
 	async get_discordBoardId_fromForum(forumBoardId) {
@@ -502,15 +537,17 @@ class SMFConnection {
 	}
 
 	async get_forumBoardId_fromTopic(forumTopicId) {
-		const qry = await this.conn.query(`SELECT id_board FROM itsa_topics WHERE id_topic=${forumTopicId};`);
-		if (qry.length === 0) {
-			throw new Error('Could not get board id.');
-		}
-		return qry[0].id_board;
+		return this.conn.query('SELECT id_board FROM ' + dbTablePrefix + '_topics WHERE id_topic='
+			+ this.conn.escape(forumTopicId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error('Could not get board id.');
+			}
+			return qry[0].id_board;
+		});
 	}
 
 	async put_boardIdPair_byName(forumBoardName, discordBoardId) {
-		const forumBoardId_qry = await this.conn.query(`SELECT id_board FROM itsa_boards WHERE name LIKE ${forumBoardName}`);
+		const forumBoardId_qry = await this.conn.query(`SELECT id_board FROM ' + dbTablePrefix + '_boards WHERE name LIKE ${forumBoardName}`);
 		if (forumBoardId_qry.length === 0) {
 			throw new Error(`Could not find board with name ${forumBoardName}`);
 		}
@@ -530,31 +567,37 @@ class SMFConnection {
 
 	async update_boardStats(forumBoardId) {
 		// Query duplicates finding latest message. Not sure that's good.
-		const qry = await this.conn.query('UPDATE itsa_boards '
-			+ `SET id_last_msg = (SELECT id_msg FROM itsa_messages WHERE id_board = ${forumBoardId} ORDER BY poster_time DESC LIMIT 1), `
-			+ `id_msg_updated = (SELECT id_msg FROM itsa_messages WHERE id_board = ${forumBoardId} ORDER BY poster_time DESC LIMIT 1), `
-			+ `num_topics = (SELECT COUNT(*) FROM itsa_topics WHERE id_board = ${forumBoardId}), `
-			+ `num_posts = (SELECT COUNT(*) FROM itsa_messages WHERE id_board = ${forumBoardId}) `
-			+ `WHERE id_board = ${forumBoardId};`);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database board UPDATE failed.');
-		}
-		return qry;
+		const escapedBoardId = await this.conn.escape(forumBoardId);
+		return this.conn.query('UPDATE ' + dbTablePrefix + '_boards '
+			+ 'SET id_last_msg = (SELECT id_msg FROM ' + dbTablePrefix + '_messages WHERE id_board = '
+			+ escapedBoardId + ' ORDER BY poster_time DESC LIMIT 1), '
+			+ 'id_msg_updated = (SELECT id_msg FROM ' + dbTablePrefix + '_messages WHERE id_board = '
+			+ escapedBoardId + ' ORDER BY poster_time DESC LIMIT 1), '
+			+ 'num_topics = (SELECT COUNT(*) FROM ' + dbTablePrefix + '_topics WHERE id_board=' + escapedBoardId + '), '
+			+ 'num_posts = (SELECT COUNT(*) FROM ' + dbTablePrefix + '_messages WHERE id_board=' + escapedBoardId
+			+ ');').then((qry) => {
+			if (qry.constructor.name !== 'OkPacket') {
+				throw new Error('Database board UPDATE failed.');
+			}
+			return qry;
+		});
 	}
 
 	/* Functions on: discordmirror_topics */
 	async create_syncTopicTable() {
-		return await this.conn.query('CREATE TABLE discordmirror_topics('
+		return this.conn.query('CREATE TABLE discordmirror_topics('
             + 'discord_topicId VARCHAR(30) UNIQUE NOT NULL, '
             + 'forum_topicId MEDIUMINT(8) UNSIGNED PRIMARY KEY);');
 	}
 
 	async get_forumTopicId_fromDiscord(discordTopicId) {
-		const qry = await this.conn.query(`SELECT forum_topicId FROM discordmirror_topics WHERE discord_topicId LIKE '${discordTopicId}'`);
-		if (qry.length === 0) {
-			throw new Error(`Could not find topic corresponding to Discord thread ${discordTopicId} in \`discordmirror_topics\``);
-		}
-		return qry[0].forum_topicId;
+		return this.conn.query('SELECT forum_topicId FROM discordmirror_topics WHERE discord_topicId LIKE '
+			+ this.conn.escape(discordTopicId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error(`Could not find topic corresponding to Discord thread ${discordTopicId} in \`discordmirror_topics\``);
+			}
+			return qry[0].forum_topicId;
+		});
 	}
 
 	async get_discordTopicId_fromForum(forumTopicId) {
@@ -566,36 +609,42 @@ class SMFConnection {
 	}
 
 	async get_forumTopicId_fromFirstMsg(forumMsgId) {
-		const qry = await this.conn.query(`SELECT id_topic FROM itsa_topics WHERE id_first_msg=${forumMsgId};`);
-		if (qry.length === 0) {
-			throw new Error('Could not get topic id.');
-		}
-		return qry[0].id_topic;
+		return this.conn.query('SELECT id_topic FROM ' + dbTablePrefix + '_topics WHERE id_first_msg='
+			+ this.conn.escape(forumMsgId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error('Could not get topic id.');
+			}
+			return qry[0].id_topic;
+		});
 	}
 
 	async get_forumTopicId_fromLastMsg(forumMsgId) {
-		const qry = await this.conn.query(`SELECT id_topic FROM itsa_topics WHERE id_last_msg=${forumMsgId};`);
-		if (qry.length === 0) {
-			throw new Error('Could not get topic id.');
-		}
-		return qry[0].id_topic;
+		return this.conn.query('SELECT id_topic FROM ' + dbTablePrefix + '_topics WHERE id_last_msg='
+			+ this.conn.escape(forumMsgId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error('Could not get topic id.');
+			}
+			return qry[0].id_topic;
+		});
 	}
 
 	async get_topicTitle_fromForumTopic(forumTopicId) {
-		const qry = await this.conn.query('SELECT subject FROM itsa_messages WHERE id_msg IN '
-			+ `(SELECT id_first_msg FROM itsa_topics WHERE id_topic=${forumTopicId});`);
-		if (qry.length === 0) {
-			throw new Error('Could not get topic title.');
-		}
-		return `Re: ${qry[0].subject}`;
+		return this.conn.query('SELECT subject FROM ' + dbTablePrefix + '_messages WHERE id_msg IN '
+			+ '(SELECT id_first_msg FROM ' + dbTablePrefix + '_topics WHERE id_topic='
+			+ this.conn.escape(forumTopicId) + ');').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error('Could not get topic title.');
+			}
+			return `Re: ${qry[0].subject}`;
+		});
 	}
 
 	async check_discordTopicMembership(discordChannelId) {
-		const qry = await this.conn.query('SELECT EXISTS '
-			+ `( SELECT 1 FROM discordmirror_topics WHERE discord_topicId LIKE '${discordChannelId}')`
-			+ 'AS isMember;');
+		return this.conn.query('SELECT EXISTS '
+			+ '( SELECT 1 FROM discordmirror_topics WHERE discord_topicId LIKE '
+			+ this.conn.escape(discordChannelId)
+			+ ') AS isMember;').then((qry) => qry[0].isMember);
 		// returns 0 for no, 1 for yes
-		return qry[0].isMember;
 	}
 
 	async check_forumTopicMembership(forumTopicId) {
@@ -607,32 +656,31 @@ class SMFConnection {
 	}
 
 	async put_topicIdPair(forumTopicId, discordTopicId) {
-		const qry = await this.conn.query('INSERT INTO discordmirror_topics (discord_topicId, forum_topicId) '
-            + `VALUES (${discordTopicId}, ${forumTopicId}); `);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database new topic link INSERT failed.');
-		}
-		return qry;
+		return this.conn.query('INSERT INTO discordmirror_topics (discord_topicId, forum_topicId) VALUES ('
+            + this.conn.escape(discordTopicId) + ', ' + this.conn.escape(forumTopicId) + ');').then((qry) => {
+			if (qry.constructor.name !== 'OkPacket') {
+				throw new Error('Database new topic link INSERT failed.');
+			}
+			return qry;
+		});
 	}
 
 	async put_newTopic(forumBoardId, startMsgId) {
-		const qry = await this.conn.query('INSERT INTO itsa_topics'
+		return this.conn.query('INSERT INTO ' + dbTablePrefix + '_topics'
             + '(id_board, id_first_msg, id_last_msg, id_member_started) '
-            + `VALUES (${forumBoardId}, ${startMsgId}, ${startMsgId}, ${myForumId}); `);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database new topic INSERT failed.');
-		}
-		return qry;
+            + 'VALUES (' + this.conn.escape(forumBoardId) + ', ' + this.conn.escape(startMsgId)
+			+ ', ' + this.conn.escape(startMsgId) + ', ' + this.conn.escape(myForumId) + '); ');
 	}
 
 	async update_forumTopic_wLatestMsg(forumTopicId, latestMsgId) {
-		const qry = await this.conn.query('UPDATE itsa_topics '
-			+ `SET id_last_msg = ${latestMsgId}, num_replies = num_replies + 1 `
-			+ `WHERE id_topic = ${forumTopicId};`);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database topic UPDATE failed.');
-		}
-		return qry;
+		return this.conn.query('UPDATE ' + dbTablePrefix + '_topics SET id_last_msg = '
+			+ this.conn.escape(latestMsgId) + ', num_replies = num_replies + 1 '
+			+ 'WHERE id_topic = ' + this.conn.escape(forumTopicId) + ';').then((qry) => {
+			if (qry.constructor.name !== 'OkPacket') {
+				throw new Error('Database topic UPDATE failed.');
+			}
+			return qry;
+		});
 	}
 
 	async update_forumTopic_deleteLatestMsg(forumTopicId, latestMsgId) {
@@ -640,13 +688,14 @@ class SMFConnection {
 		try {
 			const predecessorMsg = await this.get_precedingMsg(latestMsgId);
 
-			const qry = await this.conn.query('UPDATE itsa_topics '
-				+ `SET id_last_msg = ${predecessorMsg}, num_replies = num_replies - 1 `
-				+ `WHERE id_topic = ${forumTopicId};`);
-			if (qry.constructor.name !== 'OkPacket') {
-				throw new Error('Database topic UPDATE failed.');
-			}
-			return qry;
+			return this.conn.query('UPDATE ' + dbTablePrefix + '_topics SET id_last_msg = '
+				+ this.conn.escape(predecessorMsg) + ', num_replies = num_replies - 1 '
+				+ 'WHERE id_topic = ' + this.conn.escape(forumTopicId) + ';').then((qry) => {
+				if (qry.constructor.name !== 'OkPacket') {
+					throw new Error('Database topic UPDATE failed.');
+				}
+				return qry;
+			});
 		} catch (err) {
 			return null;
 		}
@@ -660,19 +709,23 @@ class SMFConnection {
 	}
 
 	async get_nextUnusedMsgId() {
-		const msgId_qry = await this.conn.query('SELECT auto_increment FROM information_schema.tables WHERE TABLE_NAME LIKE \'itsa_messages\';');
-		if (msgId_qry.length === 0) {
-			throw new Error('Could not get next message id.');
-		}
-		return msgId_qry[0].auto_increment;
+		return this.conn.query('SELECT auto_increment FROM information_schema.tables '
+			+ 'WHERE TABLE_NAME LIKE \'' + dbTablePrefix + '_messages\';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error('Could not get next message id.');
+			}
+			return qry[0].auto_increment;
+		});
 	}
 
 	async get_forumMsgId_fromDiscord(discordMsgId) {
-		const qry = await this.conn.query(`SELECT forum_messageId FROM discordmirror_messages WHERE discord_messageId LIKE '${discordMsgId}'`);
-		if (qry.length === 0) {
-			throw new Error(`Could not find message corresponding to Discord message ${discordMsgId} in \`discordmirror_messages\``);
-		}
-		return qry[0].forum_messageId;
+		return this.conn.query('SELECT forum_messageId FROM discordmirror_messages WHERE '
+			+ 'discord_messageId LIKE ' + this.conn.escape(discordMsgId) + ';').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error(`Could not find message corresponding to Discord message ${discordMsgId} in \`discordmirror_messages\``);
+			}
+			return qry[0].forum_messageId;
+		});
 	}
 
 	async get_discordMsgId_fromForum(forumMsgId) {
@@ -685,14 +738,15 @@ class SMFConnection {
 
 	async get_precedingMsg(forumMsgId) {
 		// ASSUMES topic ids are unique even among multiple boards
-		const qry = await this.conn.query('SELECT id_msg FROM itsa_messages WHERE ' +
-			`poster_time < (SELECT poster_time FROM itsa_messages WHERE id_msg = ${forumMsgId} ) AND ` +
-			`id_topic = (SELECT id_topic FROM itsa_messages WHERE id_msg = ${forumMsgId}) ` +
-			'ORDER BY poster_time DESC LIMIT 1; ');
-		if (qry.length === 0) {
-			throw new Error(`Could not find preceding message in same topic as message ${forumMsgId}.`);
-		}
-		return qry[0].id_msg;
+		return this.conn.query('SELECT id_msg FROM ' + dbTablePrefix + '_messages WHERE ' +
+			'poster_time < (SELECT poster_time FROM ' + dbTablePrefix + '_messages WHERE id_msg=' + this.conn.escape(forumMsgId)
+			+ ' ) AND id_topic = (SELECT id_topic FROM ' + dbTablePrefix + '_messages WHERE id_msg=' + this.conn.escape(forumMsgId)
+			+ ' ) ORDER BY poster_time DESC LIMIT 1; ').then((qry) => {
+			if (qry.length === 0) {
+				throw new Error(`Could not find preceding message in same topic as message ${forumMsgId}.`);
+			}
+			return qry[0].id_msg;
+		});
 	}
 
 	async check_discordMsgMembership(discordMsgId) {
@@ -704,21 +758,19 @@ class SMFConnection {
 	}
 
 	async put_msgIdPair(forumMsgId, discordMsgId) {
-		const qry = await this.conn.query('INSERT INTO discordmirror_messages (discord_messageId, forum_messageId) '
-            + `VALUES (${discordMsgId}, ${forumMsgId}); `);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database new message link INSERT failed.');
-		}
-		return qry;
+		return this.conn.query('INSERT INTO discordmirror_messages (discord_messageId, forum_messageId) '
+            + 'VALUES (' + this.conn.escape(discordMsgId) + ', ' + this.conn.escape(forumMsgId) + ');').then((qry) => {
+			if (qry.constructor.name !== 'OkPacket') {
+				throw new Error('Database new message link INSERT failed.');
+			}
+			return qry;
+		});
 	}
 
 	async delete_msgIdPair(forumMsgId, discordMsgId) {
-		const qry = await this.conn.query('DELETE FROM discordmirror_messages '
-            + `WHERE discord_messageId LIKE '${discordMsgId}' AND forum_messageID = ${forumMsgId}; `);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database message link DELETE failed.');
-		}
-		return qry;
+		return this.conn.query('DELETE FROM discordmirror_messages WHERE discord_messageId LIKE '
+            + this.conn.escape(discordMsgId) + ' AND forum_messageID = '
+			+ this.conn.escape(forumMsgId) + ';');
 	}
 
 	async delete_topicIdPair(forumTopicId, discordTopicId) {
@@ -731,55 +783,53 @@ class SMFConnection {
 	}
 
 	async delete_forumTopic(forumTopicId) {
-		return this.conn.query('DELETE FROM itsa_topics '
+		return this.conn.query('DELETE FROM ' + dbTablePrefix + '_topics '
             + 'WHERE id_topic = ' + this.conn.escape(forumTopicId) + '; ');
 	}
 
 	async delete_messagesInForumTopic(forumTopicId) {
-		return this.conn.query('DELETE FROM itsa_messages '
+		return this.conn.query('DELETE FROM ' + dbTablePrefix + '_messages '
             + 'WHERE id_topic = ' + this.conn.escape(forumTopicId) + '; ');
 	}
 
 	async put_newMsg(forumTopicId, forumBoardId, author, title, content) {
-		return this.conn.query('INSERT INTO itsa_messages '
+		return this.conn.query('INSERT INTO ' + dbTablePrefix + '_messages '
             + '(id_topic, id_board, discord_original, poster_time, id_member, subject, poster_name, poster_email, body) '
-            + `VALUES (${forumTopicId}, ${forumBoardId}, TRUE, UNIX_TIMESTAMP(), `
-            + `${myForumId}, ` + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
+            + 'VALUES ('+ this.conn.escape(forumTopicId) + ', ' + this.conn.escape(forumBoardId)
+			+ ', TRUE, UNIX_TIMESTAMP(), ' + this.conn.escape(myForumId) + ', '
+			+ this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
 			+ this.conn.escape(myEmail) + ', ' + this.conn.escape(content) + '); ');
 	}
 
 	async put_newMsg_setId(msgId, forumTopicId, forumBoardId, author, title, content) {
-		return this.conn.query('INSERT INTO itsa_messages '
+		return this.conn.query('INSERT INTO ' + dbTablePrefix + '_messages '
             + '(id_msg, id_topic, id_board, discord_original, poster_time, id_member, subject, poster_name, poster_email, body) '
-            + `VALUES (${msgId}, ${forumTopicId}, ${forumBoardId}, TRUE, UNIX_TIMESTAMP(), `
-            + `${myForumId}, ` + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
+            + 'VALUES (' + this.conn.escape(msgId) + ', ' + this.conn.escape(forumTopicId) + ', '
+			+ this.conn.escape(forumBoardId) + ', TRUE, UNIX_TIMESTAMP(), '
+            + this.conn.escape(myForumId) + ', ' + this.conn.escape(title) + ', ' + this.conn.escape(author) + ', '
 			+ this.conn.escape(myEmail) + ', ' + this.conn.escape(content) + '); ');
 	}
 
 	async update_forumMsg(msgId, updaterName, content) {
 		// ASSUMES THE PERSON EDITING IS ALWAYS THE SAME AS THE ORIGINAL AUTHOR
-		const qry = await this.conn.query('UPDATE itsa_messages '
-			+ 'SET body = ' + this.conn.escape(content) + ', modified_time = UNIX_TIMESTAMP(), modified_name = '
-			+ this.conn.escape(updaterName) + ` WHERE id_msg = ${msgId};`);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database message UPDATE failed.');
-		}
-		return qry;
+		return this.conn.query('UPDATE ' + dbTablePrefix + '_messages SET body =  ' + this.conn.escape(content)
+			+ ', modified_time = UNIX_TIMESTAMP(), modified_name = ' + this.conn.escape(updaterName)
+			+ ' WHERE id_msg = ' + this.conn.escape(msgId) + ';').then((qry) => {
+			if (qry.constructor.name !== 'OkPacket') {
+				throw new Error('Database message UPDATE failed.');
+			}
+			return qry;
+		});
 	}
 
 	async delete_forumMsg(msgId) {
 		// ASSUMES YOU HAVE ALREADY CHECKED IT IS NOT A TOPIC STARTER
-		const qry = await this.conn.query('DELETE FROM itsa_messages '
-			+ `WHERE id_msg=${msgId}; `);
-		if (qry.constructor.name !== 'OkPacket') {
-			throw new Error('Database message DELETE failed.');
-		}
-		return qry;
+		return this.conn.query('DELETE FROM ' + dbTablePrefix + '_messages WHERE id_msg=' + this.conn.escape(msgId) + ';');
 	}
 
 	async get_latestMessageTime() {
 		const qry = await this.conn.query('SELECT update_time FROM information_schema.tables '
-			+ 'WHERE TABLE_SCHEMA = \'forums\' AND TABLE_name = \'itsa_messages\';');
+			+ 'WHERE TABLE_SCHEMA = \'' + dbName + '\' AND TABLE_name = \'' + dbTablePrefix + '_messages\';');
 		if (qry.length === 0) {
 			throw new Error('Could not find latest message sent time.');
 		}
@@ -787,7 +837,7 @@ class SMFConnection {
 	}
 
 	async get_newForumPosts_sinceTime(time) {
-		const qry = await this.conn.query('SELECT * FROM itsa_messages WHERE ' +
+		const qry = await this.conn.query('SELECT * FROM ' + dbTablePrefix + '_messages WHERE ' +
 			`poster_time > ${time} AND ` +
 			'id_msg NOT IN (SELECT forum_messageId FROM discordmirror_messages) AND ' +
 			'discord_original IS FALSE ORDER BY poster_time ASC; ');
@@ -795,7 +845,7 @@ class SMFConnection {
 	}
 
 	async get_updatedForumPosts_sinceTime(time) {
-		const qry = await this.conn.query('SELECT * FROM itsa_messages WHERE ' +
+		const qry = await this.conn.query('SELECT * FROM ' + dbTablePrefix + '_messages WHERE ' +
 			`modified_time <> 0 AND modified_time > ${time} AND ` +
 			'id_msg IN (SELECT forum_messageId FROM discordmirror_messages) AND ' +
 			'discord_original IS FALSE ORDER BY poster_time ASC; ');
@@ -853,7 +903,7 @@ class SMFConnection {
 
 		// Step 2: post the message
 		const topic = await client.channels.fetch(dHome).catch(err => console.log('Could not find thread channel due to ', err));
-		const content = getDiscordReadyContent(msg.body, msg.poster_name); //@
+		const content = getDiscordReadyContent(msg.body, msg.poster_name);
 		const dmsg = await topic.send(content);
 		await this.put_msgIdPair(msg.id_msg, dmsg.id);
 
@@ -904,7 +954,7 @@ class SMFConnection {
 
 		const content = getDiscordReadyContent(msg.body, msg.poster_name);
 
-		if (discordMsg.author.id === clientId) {
+		if (discordMsg.author.id === myDiscordId) {
 			// we can only update the message if Mirrorer is the original author.
 			discordMsg.edit(content);
 		} else {
@@ -928,7 +978,7 @@ class SMFConnection {
 	}
 
 	async get_nMsgsInTopic(forum_topicId) {
-		return this.conn.query(`SELECT COUNT(*) AS count FROM itsa_messages WHERE id_topic = ${forum_topicId};`).then((value) => { return value.count; } );
+		return this.conn.query(`SELECT COUNT(*) AS count FROM ' + dbTablePrefix + '_messages WHERE id_topic = ${forum_topicId};`).then((value) => { return value.count; } );
 	}
 
 	async get_deletedMsgsOfSameTopic(forum_topicId) {
@@ -942,7 +992,7 @@ class SMFConnection {
 		try {
 			dMsgId = await this.get_discordMsgId_fromForum(msg.forum_messageId);
 		} catch (err) {
-			console.log("-> Mirror of message", msg.forum_messageId, "is not known or already deleted.");
+			console.log('-> Mirror of message', msg.forum_messageId, 'is not known or already deleted.');
 			return;
 		}
 
@@ -963,7 +1013,7 @@ class SMFConnection {
 					// Deleting it in Discord is unecessary: it will already be gone
 					this.delete_msgIdPair(deletedMsg.forum_messageId, deletedDMsgId);
 				} catch (err) {
-					console.log("-> Mirror of message ", deletedMsg.forum_messageId, "tbat should be in same topic is not known or already deleted.");
+					console.log('-> Mirror of message ', deletedMsg.forum_messageId, 'tbat should be in same topic is not known or already deleted.');
 				}
 
 			}
@@ -1005,29 +1055,29 @@ class SMFConnection {
 	}
 
 	async get_forumMsg_fromId(msgId) {
-		return this.conn.query('SELECT * FROM itsa_messages WHERE id_msg = ' + this.conn.escape(msgId) + ';');
+		return this.conn.query('SELECT * FROM ' + dbTablePrefix + '_messages WHERE id_msg = ' + this.conn.escape(msgId) + ';');
 	}
 
 	async get_allMsgIds_ofDOriginals() {
-		return this.conn.query('SELECT id_msg, id_topic, id_board FROM itsa_messages '
+		return this.conn.query('SELECT id_msg, id_topic, id_board FROM ' + dbTablePrefix + '_messages '
 			+ 'WHERE discord_original IS TRUE;');
 	}
 
 	async get_msgId_oflatestDOriginal_inFBoard(fBoardId) {
-		return this.conn.query('SELECT id_msg FROM itsa_messages WHERE '
+		return this.conn.query('SELECT id_msg FROM ' + dbTablePrefix + '_messages WHERE '
 		+ 'discord_original IS TRUE AND id_board = ' + this.conn.escape(fBoardId)
 		+ ' ORDER BY poster_time DESC LIMIT 1;');
 	}
 
 	async get_msgId_oflatestDOriginal_inFTopic(fTopicId) {
-		return this.conn.query('SELECT id_msg FROM itsa_messages WHERE '
+		return this.conn.query('SELECT id_msg FROM ' + dbTablePrefix + '_messages WHERE '
 		+ 'discord_original IS TRUE AND id_topic = ' + this.conn.escape(fTopicId)
 		+ ' ORDER BY poster_time DESC LIMIT 1;');
 	}
 
 	async get_discordMsgId_ofLatestDMsg() {
 		return this.conn.query('SELECT discord_messageId FROM discordmirror_messages '
-			+ 'WHERE forum_messageId = (SELECT id_msg FROM itsa_messages WHERE '
+			+ 'WHERE forum_messageId = (SELECT id_msg FROM ' + dbTablePrefix + '_messages WHERE '
 			+ 'discord_original IS TRUE ORDER BY poster_time DESC LIMIT 1);');
 	}
 
@@ -1052,7 +1102,7 @@ class SMFConnection {
 	}
 
 	async get_firstMsgId_inTopic(topicId) {
-		return this.conn.query('SELECT id_first_msg FROM itsa_topics WHERE id_topic = ' + this.conn.escape(topicId) + ';');
+		return this.conn.query('SELECT id_first_msg FROM ' + dbTablePrefix + '_topics WHERE id_topic = ' + this.conn.escape(topicId) + ';');
 	}
 
 	async get_discordMessage_fromFIds(client, forum_messageId, forum_topicId, forum_boardId) {
@@ -1061,7 +1111,7 @@ class SMFConnection {
 		const topicStarter = await this.get_firstMsgId_inTopic(forum_topicId);
 		if (topicStarter.length === 0) {
 			return undefined;
-			//throw new Error(`Could not get Discord message: forum topic ${forum_topicId} seems not to exist.`);
+			// throw new Error(`Could not get Discord message: forum topic ${forum_topicId} seems not to exist.`);
 		}
 
 		let discord_channelId = undefined;
@@ -1074,10 +1124,10 @@ class SMFConnection {
 		}
 
 		const discordMsg = await SMFConnection.get_discordMessage(client, discord_channelId, discord_messageId);
-		const obj = {"discordMsg": discordMsg,
-			"discordMsgId": discord_messageId,
-			"discordChannelId": discord_channelId,
-			"isTopicStarter": isTopicStarter
+		const obj = {'discordMsg': discordMsg,
+			'discordMsgId': discord_messageId,
+			'discordChannelId': discord_channelId,
+			'isTopicStarter': isTopicStarter,
 		};
 		return obj;
 	}

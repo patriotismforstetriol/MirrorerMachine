@@ -37,7 +37,7 @@ class discordWatcher {
                     for (const newMessage of newMessages.values()) {
                         if (newMessage.author.id !== clientId) {
                             await db.sync_newTopic(newMessage);
-                            await message.react('🌐');
+                            await newMessage.react('🌐');
                         }
                     }
                 }

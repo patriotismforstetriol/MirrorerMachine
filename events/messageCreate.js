@@ -7,12 +7,6 @@ module.exports = {
 		// No bot messages and discard irrelevant channels
 		if (message.author.bot) return;
 
-		// In-memory arrays for checking whether to process further would be useful (faster)
-		// but for now just use database accesses
-		/* if ((threadChannels.filter(channel => channel === message.channelId)).length === 0 ||
-            (activeThreads.filter(channel => channel === message.channelId)).length === 0) {
-            return;
-        }*/
 		try {
 			const db = await SMFConnection.SMFConnectionBuilder();
 			const isSyncChannel = await db.check_discordBoardMembership(message.channelId);
@@ -45,7 +39,7 @@ module.exports = {
 			await db.end();
 		} catch (err) {
 			console.log('Failed to connect to db due to ', err);
-			await message.reply('Failed to connect to my database!');
+			// await message.reply({ content:'Failed to connect to my database!', ephemeral:true });
 		}
 	},
 };

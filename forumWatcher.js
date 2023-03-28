@@ -1,8 +1,9 @@
 const { SMFConnection } = require('./SMFlib.js');
+const { forumCheckIntervalms } = require('./config.json');
 
 class forumWatcher {
 	// Parameters: forumCheckInterval; watcherId; lastTick;
-    forumCheckInterval = 3000;
+    forumCheckInterval = forumCheckIntervalms;
     watcherId = undefined;
     client = undefined;
     lastTick = 0;

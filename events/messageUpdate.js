@@ -32,7 +32,7 @@ module.exports = {
 			await db.end();
 		} catch (err) {
 			console.log('Failed to connect to db due to ', err);
-			await newMessage.reply('Failed to connect to my database!');
+			// await newMessage.reply({ content:'Failed to connect to my database!', ephemeral:true });
 		}
 	},
 };
