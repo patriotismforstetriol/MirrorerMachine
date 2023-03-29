@@ -5,12 +5,16 @@
     "guildRegisteredRole": "100000000000000000",
     "myDiscordAdmin": "100000000000000000",
     "myEmail": "email@example.com",
-    "dbUsername": "dbuser",
-    "dbHostname": "example.com",
-    "dbPw": "Password1",
-    "dbName": "forums",
+    "dbConfig": {
+        "host": "example.com",
+        "socketPath": "",
+        "user": "dbuser",
+        "password": "Password1",
+        "database": "forums",
+        "connectionLimit": 10
+    },
     "dbTablePrefix": "smf_",
     "forumHostname": "https://example.com/forums/",
     "myForumId": "2",
-    "forumCheckIntervals": 3000
+    "forumCheckIntervalms": 3000
 }

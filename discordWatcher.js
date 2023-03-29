@@ -15,7 +15,7 @@ class discordWatcher {
     syncEverythingSince(client, lastTick = Math.floor(Date.now() / 1000)) {
         this.client = client;
         // Check for stuff that happened since last time
-        this.spotNewMessages(); // @@
+        this.spotNewMessages();
         this.spotDeletedAndUpdatedMessages(lastTick);
 	}
 

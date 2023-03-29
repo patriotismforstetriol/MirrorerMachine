@@ -1,7 +1,7 @@
 // Library functions for syncing between Simple Machines Forum and Discord server
 const { Message, Attachment } = require('discord.js');
 const mariadb = require('mariadb');
-const { dbUsername, dbHostname, dbPw, dbName, dbTablePrefix, myDiscordId, myForumId, myEmail, myDiscordAdmin, forumHostname } = require('./config.json');
+const { dbConfig, dbTablePrefix, myDiscordId, myForumId, myEmail, myDiscordAdmin, forumHostname } = require('./config.json');
 
 
 /* GENERAL CATEGORY */
@@ -190,12 +190,7 @@ function convertDiscordAttachmentToMarkdown(attachment) {
 
 /* SMF DATABASE INTERACTION */
 
-const pool = mariadb.createPool({
-	host: dbHostname,
-	user: dbUsername,
-	password: dbPw,
-	connectionLimit: 5,
-});
+const pool = mariadb.createPool(dbConfig);
 exports.pool = pool;
 
 /**
@@ -212,7 +207,7 @@ class SMFConnection {
      */
 	static async SMFConnectionBuilder() {
 		const conn = await pool.getConnection();
-		await conn.query('USE ' + dbName + ';');
+		// await conn.query('USE ' + dbName + ';');
 		return new SMFConnection(conn);
 	}
 
@@ -221,7 +216,8 @@ class SMFConnection {
 	}
 
 	async end() {
-		this.conn.end();
+		// this.conn.end(); // Because we have a pool we release rather than end
+		this.conn.release();
 	}
 
 	async beginTransaction() {
@@ -241,6 +237,15 @@ class SMFConnection {
 	}
 
 	/* Higher level methods */
+	async create_extraColumns() {
+		this.conn.query('ALTER TABLE ' + dbTablePrefix + 'messages '
+			+ 'ADD COLUMN IF NOT EXISTS discord_original BOOLEAN DEFAULT FALSE;').then((value) => {
+			if (value.constructor.name !== 'OkPacket') {
+				throw new Error('discord_original column creation failed.');
+			}
+		});
+	}
+
 	async create_syncTables() {
 		this.create_syncMemberTable().then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
@@ -444,14 +449,14 @@ class SMFConnection {
 
 	/* Functions on: discordmirror_members */
 	async create_syncMemberTable() {
-		return this.conn.query('CREATE TABLE discordmirror_members('
+		return this.conn.query('CREATE TABLE IF NOT EXISTS discordmirror_members('
             + 'discordid_member VARCHAR(30) PRIMARY KEY, '
             + 'discord_member_name VARCHAR(80) UNIQUE NOT NULL, '
             + 'date_registered DATE NOT NULL DEFAULT CURRENT_DATE);');
 	}
 
 	async create_unsyncedDeletionsTable() {
-		return this.conn.query('CREATE TABLE discordmirror_unsynced_deletions('
+		return this.conn.query('CREATE TABLE IF NOT EXISTS discordmirror_unsynced_deletions('
             + 'forum_messageId int(10) UNSIGNED PRIMARY KEY, '
             + 'forum_topicId MEDIUMINT(8) UNSIGNED NOT NULL, '
 			+ 'forum_boardId SMALLINT(5) UNSIGNED NOT NULL);',
@@ -459,29 +464,32 @@ class SMFConnection {
 			if (value.constructor.name !== 'OkPacket') {
 				return value;
 			} else {
-				return this.conn.query('CREATE TRIGGER FMsgDelete AFTER DELETE ON ' + dbTablePrefix + 'messages '
+				return this.conn.query('CREATE TRIGGER IF NOT EXISTS FMsgDelete AFTER DELETE ON ' + dbTablePrefix + 'messages '
 					+ 'FOR EACH ROW INSERT INTO discordmirror_unsynced_deletions(forum_messageId, forum_topicId, forum_boardId) '
 					+ 'VALUES (old.id_msg, old.id_topic, old.id_board);');
 			}
 		}).then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
 				return value;
+			} else if (typeof dbConfig.host === 'undefined') {
+				return this.conn.query('GRANT DROP ON TABLE discordmirror_unsynced_deletions TO '
+				+ dbConfig.user + '@\'localhost\';');
 			} else {
 				return this.conn.query('GRANT DROP ON TABLE discordmirror_unsynced_deletions TO '
-					+ this.conn.escape(dbUsername) + '@\'%\';');
+				+ dbConfig.user + '@\'%\';');
 			}
 		});
 	}
 
 	async create_lastSyncsTable() {
-		return this.conn.query('CREATE TABLE discordmirror_lastsyncs('
+		return this.conn.query('CREATE TABLE IF NOT EXISTS discordmirror_lastsyncs('
 			+ 'forum BOOLEAN PRIMARY KEY, '
 			+ 'sync_time int(10) UNSIGNED DEFAULT 0);',
 		).then((value) => {
 			if (value.constructor.name !== 'OkPacket') {
 				return value;
 			} else {
-				return this.conn.query('INSERT INTO discordmirror_lastsyncs(forum, sync_time) '
+				return this.conn.query('INSERT IGNORE INTO discordmirror_lastsyncs(forum, sync_time) '
 						+ 'VALUES (TRUE,0), (FALSE,0);');
 			}
 		});
@@ -499,7 +507,7 @@ class SMFConnection {
 
 	/* Functions on: discordmirror_boards */
 	async create_syncBoardTable() {
-		return await this.conn.query('CREATE TABLE discordmirror_boards('
+		return await this.conn.query('CREATE TABLE IF NOT EXISTS discordmirror_boards('
             + 'discord_boardId VARCHAR(30) UNIQUE NOT NULL, '
             + 'forum_boardId SMALLINT(5) UNSIGNED PRIMARY KEY);');
 	}
@@ -585,7 +593,7 @@ class SMFConnection {
 
 	/* Functions on: discordmirror_topics */
 	async create_syncTopicTable() {
-		return this.conn.query('CREATE TABLE discordmirror_topics('
+		return this.conn.query('CREATE TABLE IF NOT EXIST discordmirror_topics('
             + 'discord_topicId VARCHAR(30) UNIQUE NOT NULL, '
             + 'forum_topicId MEDIUMINT(8) UNSIGNED PRIMARY KEY);');
 	}
@@ -703,7 +711,7 @@ class SMFConnection {
 
 	/* Functions on: discordmirror_messages */
 	async create_syncMsgTable() {
-		return await this.conn.query('CREATE TABLE discordmirror_messages('
+		return await this.conn.query('CREATE TABLE IF NOT EXISTS discordmirror_messages('
             + 'discord_messageId VARCHAR(30) UNIQUE NOT NULL, '
             + 'forum_messageId int(10) UNSIGNED PRIMARY KEY);');
 	}
@@ -829,7 +837,7 @@ class SMFConnection {
 
 	async get_latestMessageTime() {
 		const qry = await this.conn.query('SELECT update_time FROM information_schema.tables '
-			+ 'WHERE TABLE_SCHEMA = \'' + dbName + '\' AND TABLE_name = \'' + dbTablePrefix + 'messages\';');
+			+ 'WHERE TABLE_SCHEMA = \'' + dbConfig.database + '\' AND TABLE_name = \'' + dbTablePrefix + 'messages\';');
 		if (qry.length === 0) {
 			throw new Error('Could not find latest message sent time.');
 		}
